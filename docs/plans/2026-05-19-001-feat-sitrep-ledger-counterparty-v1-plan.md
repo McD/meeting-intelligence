@@ -1,7 +1,7 @@
 ---
 title: "feat: SITREP brief + decision ledger + counterparty section (v1)"
 type: feat
-status: active
+status: completed
 date: 2026-05-19
 origin: docs/brainstorms/2026-05-19-sitrep-ledger-counterparty-v1-requirements.md
 ---
