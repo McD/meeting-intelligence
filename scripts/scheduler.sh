@@ -58,6 +58,23 @@ if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
     fi
 fi
 
+# Detect Claude Code updates and warn proactively about possible permission re-prompts.
+# After some Claude Code updates, --dangerously-skip-permissions can be re-prompted,
+# which the headless scheduler cannot answer. Flagging the version change up front means
+# the user knows what to do if briefings start failing silently afterwards.
+CLAUDE_VERSION_FILE="$BRIEFING_DIR/.claude_version"
+CURRENT_CLAUDE_VERSION=$("$CLAUDE" --version 2>/dev/null | head -1 || echo "unknown")
+LAST_CLAUDE_VERSION=$(cat "$CLAUDE_VERSION_FILE" 2>/dev/null || echo "")
+if [ -n "$LAST_CLAUDE_VERSION" ] && [ "$CURRENT_CLAUDE_VERSION" != "$LAST_CLAUDE_VERSION" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M')] Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION" >> "$BRIEFING_DIR/scheduler.log"
+    if [ -n "$SLACK_WEBHOOK" ]; then
+        curl -s -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-type: application/json' \
+            -d "{\"text\": \":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). If briefings start failing, open a terminal and run \`claude\` once interactively to confirm any new permission prompts.\"}"
+    fi
+fi
+echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
+
 # === Pre-flight gate: only invoke Claude if there's actual work ===
 # Asks gws Calendar directly: any meeting needing briefing? any ended meeting needing follow-up?
 # Plus: any *-awaiting-*.md files (transcript replies to check)?
@@ -200,12 +217,19 @@ run_claude() {
                 -H 'Content-type: application/json' \
                 -d "{\"text\": \":key: Briefings paused — OAuth token expired. Run: claude /briefing to refresh.\"}"
         fi
+    elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
+        echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give." >> "$BRIEFING_DIR/scheduler.log"
+        if [ -n "$SLACK_WEBHOOK" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK" \
+                -H 'Content-type: application/json' \
+                -d "{\"text\": \":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle.\"}"
+        fi
     elif ! echo "$output" | grep -q "."; then
         echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: $label exited with failure." >> "$BRIEFING_DIR/scheduler.log"
         if [ -n "$SLACK_WEBHOOK" ]; then
             curl -s -X POST "$SLACK_WEBHOOK" \
                 -H 'Content-type: application/json' \
-                -d "{\"text\": \":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log\"}"
+                -d "{\"text\": \":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage.\"}"
         fi
     fi
 }
