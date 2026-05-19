@@ -3,3 +3,6 @@
 *.bak
 *.tmp
 .scheduler.lock
+.venv/
+__pycache__/
+*.egg-info/
