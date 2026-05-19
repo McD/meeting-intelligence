@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-04-13 -->
+<!-- version: 2026-05-19 — adds explicit --force regenerate semantics for a specific meeting; ledger writes, why-prompt emails, awaiting-why state -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -24,6 +24,9 @@ Check `$ARGUMENTS`:
 
 - If empty or "all" → process **all** meetings that ended today (no follow-up or awaiting file yet)
 - If a meeting name or time → process that **specific** meeting
+- If `$ARGUMENTS` contains `--force` (or the user otherwise asks to regenerate / overwrite / replace an existing follow-up) → **force mode**. Bypass the "follow-up file already exists" guard in Step 1 and overwrite the existing file. Force mode is only valid with a specific meeting name; refuse `--force` combined with `all` (the mass-rewrite blast radius is too large to be safe without per-meeting confirmation). Strip the `--force` token from the meeting name when matching against the calendar.
+
+Force mode is the right path when a transcript appeared late, when ledger writes (Step 3 onwards) need to be re-run against an older follow-up that predates the ledger work, or when a manual fix is needed. The default (no `--force`) preserves idempotency — re-running `/follow-up all` from cron must never overwrite a sent follow-up.
 
 ---
 
@@ -164,7 +167,9 @@ ls ~/Briefings/YYYY-MM-DD-HHmm-awaiting-SLUG.md 2>/dev/null && echo "EXISTS"
 
 **If either file exists → skip this meeting entirely. Do not re-send email or re-create the file.**
 
-Only meetings with no existing follow-up or awaiting file should proceed to Step 2.
+**Force-mode exception:** if Routing detected `--force` for a specific named meeting, the guard above is bypassed for that meeting only. Overwrite the existing follow-up file; if an `*-awaiting-*.md` file exists for the same slug, delete it before regeneration so the rewritten follow-up's awaiting-why state is the authoritative one. Never apply force mode to the `all` sweep.
+
+Only meetings with no existing follow-up or awaiting file (or with force mode set for a specific meeting) should proceed to Step 2.
 
 If no qualifying meetings exist, say so and stop.
 

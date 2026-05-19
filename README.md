@@ -52,7 +52,10 @@ After updating, you can sanity-check the install end-to-end:
 bash scripts/verify-v1.sh
 ```
 
-Add `--with-email` to also send a fixture follow-up to your `MY_EMAIL` to exercise the why-capture reply path.
+Optional flags:
+
+- `--with-briefing` — force-regenerates the next upcoming meeting's briefing and asserts the SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed meetings). Costs a real `claude -p` call and a couple of minutes.
+- `--with-email` — sends a fixture follow-up email to your `MY_EMAIL` so you can exercise the why-capture reply path.
 
 ## Layout
 

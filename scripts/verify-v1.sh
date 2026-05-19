@@ -39,12 +39,15 @@ info()    { echo -e "  ${BOLD}→${NC} $1"; }
 warn()    { echo -e "  ${YELLOW}!${NC} $1"; }
 
 WITH_EMAIL=0
+WITH_BRIEFING=0
 for arg in "$@"; do
     case "$arg" in
-        --with-email) WITH_EMAIL=1 ;;
+        --with-email)    WITH_EMAIL=1 ;;
+        --with-briefing) WITH_BRIEFING=1 ;;
         --help|-h)
-            echo "Usage: $0 [--with-email]"
-            echo "  --with-email   Also send a manual follow-up reply test"
+            echo "Usage: $0 [--with-briefing] [--with-email]"
+            echo "  --with-briefing   Also force-regenerate the next briefing and assert SITREP shape"
+            echo "  --with-email      Also send a manual follow-up reply test"
             exit 0
             ;;
         *) warn "Unknown arg: $arg" ;;
@@ -281,9 +284,104 @@ else
     fail "MCP-query roundtrip" "no Python venv available"
 fi
 
-# ── 8. Manual half: send a test follow-up email (gated by --with-email) ─────
+# ── 8. Manual half: generate a real briefing and assert SITREP shape ────────
+# Gated by --with-briefing because it requires a `claude -p` call (network +
+# API spend + 1–3 minutes) and a calendar with an upcoming meeting in the
+# next 2 hours. The automated half above can't cover this because briefings
+# are Claude-generated.
+if [ "$WITH_BRIEFING" -eq 1 ]; then
+    section "8. Manual: regenerate next briefing and assert SITREP shape"
+
+    if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
+        fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /briefing"
+    else
+        # Track the latest briefing file's mtime so we can detect whether
+        # /briefing actually wrote something new.
+        latest_before=""
+        before_mtime=0
+        if compgen -G "$HOME/Briefings/*.md" >/dev/null; then
+            latest_before=$(ls -t "$HOME"/Briefings/*.md 2>/dev/null \
+                | grep -vE 'followup|awaiting|scheduler' | head -1 || true)
+            if [ -n "$latest_before" ] && [ -f "$latest_before" ]; then
+                before_mtime=$(stat -f '%m' "$latest_before" 2>/dev/null \
+                    || stat -c '%Y' "$latest_before" 2>/dev/null || echo 0)
+            fi
+        fi
+
+        info "Running /briefing (this can take 1–3 minutes)..."
+        # Force regenerate so the assertion exercises the CURRENT briefing
+        # rendering rather than a possibly-stale on-disk file.
+        claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            "/briefing — force regenerate the next upcoming meeting's briefing, replacing the existing file if one exists. We need to validate the SITREP shape." \
+            < /dev/null 2>&1) || true
+
+        latest=$(ls -t "$HOME"/Briefings/*.md 2>/dev/null \
+            | grep -vE 'followup|awaiting|scheduler' | head -1 || true)
+
+        if [ -z "$latest" ] || [ ! -f "$latest" ]; then
+            fail "/briefing produced no file" "no upcoming meeting on calendar, or claude refused"
+            echo "$claude_out" | tail -8 | sed 's/^/      /'
+        else
+            current_mtime=$(stat -f '%m' "$latest" 2>/dev/null \
+                || stat -c '%Y' "$latest" 2>/dev/null || echo 0)
+            if [ "$current_mtime" -le "$before_mtime" ]; then
+                warn "Latest briefing mtime unchanged — claude may have skipped regeneration."
+                warn "  Asserting on existing file: $(basename "$latest")"
+            else
+                info "Fresh briefing written: $(basename "$latest")"
+            fi
+
+            # Verdict word set is closed (commands/briefing.md). Anything outside
+            # this set is a regression that breaks the high-stakes filter in
+            # commands/follow-up.md Step 4 which reads the verdict word back.
+            verdict_re='^# (DECIDE-TODAY|DELEGATE|DEFER|DECLINE|PREP-HARD|LOW-STAKES|MOVE-ASYNC) — '
+            if grep -qE "$verdict_re" "$latest"; then
+                verdict=$(grep -E -m1 -o "$verdict_re" "$latest" 2>/dev/null \
+                    | awk '{print $2}')
+                pass "Verdict heading from closed set ($verdict)"
+            else
+                fail "Verdict heading" "no '# <VERDICT> — ' from closed set in $(basename "$latest")"
+                head -3 "$latest" | sed 's/^/      /'
+            fi
+
+            # SITREP block + the three always-on labels.
+            for spec in \
+                "SITREP block:^## SITREP" \
+                "Trap label:^\\*\\*Trap:\\*\\*" \
+                "Delta label:^\\*\\*Delta:\\*\\*" \
+                "Comment label:^\\*\\*Comment:\\*\\*"; do
+                label="${spec%%:*}"
+                pattern="${spec#*:}"
+                if grep -qE "$pattern" "$latest"; then
+                    pass "$label present"
+                else
+                    fail "$label missing" "$(basename "$latest")"
+                fi
+            done
+
+            # Counterparty is conditional (external/mixed meetings only). Don't
+            # fail on its absence; the meeting may be internal-only. Report
+            # which case we hit so a regression like "Counterparty rendered for
+            # an internal meeting" is visible.
+            if grep -qE '^\*\*Counterparty:\*\*' "$latest"; then
+                info "Counterparty section present (meeting is external/mixed)"
+                # If thin-data, the literal honesty label should appear.
+                if grep -qF 'Limited counterparty signal' "$latest"; then
+                    info "  Includes thin-data honesty label."
+                fi
+            else
+                info "Counterparty section absent (meeting is internal-only)"
+            fi
+        fi
+    fi
+else
+    section "8. Manual briefing test (skipped)"
+    info "Re-run with --with-briefing to regenerate the next briefing and assert SITREP shape."
+fi
+
+# ── 9. Manual half: send a test follow-up email (gated by --with-email) ─────
 if [ "$WITH_EMAIL" -eq 1 ]; then
-    section "8. Manual: test follow-up email (U3 why-capture path)"
+    section "9. Manual: test follow-up email (U3 why-capture path)"
 
     MY_EMAIL=$(grep '^MY_EMAIL=' "$HOME/.briefings_config" 2>/dev/null | cut -d= -f2)
     if [ -z "$MY_EMAIL" ]; then
@@ -312,7 +410,7 @@ BODY
         fi
     fi
 else
-    section "8. Manual email test (skipped)"
+    section "9. Manual email test (skipped)"
     info "Re-run with --with-email to send a test follow-up to MY_EMAIL."
 fi
 
