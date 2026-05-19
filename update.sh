@@ -68,6 +68,43 @@ cp "$SCRIPT_DIR/scripts/scheduler.sh" ~/Briefings/scheduler.sh
 chmod +x ~/Briefings/scheduler.sh
 ok "scheduler.sh updated."
 
+# ── Refresh briefings_mcp runtime ────────────────────────────────────────────
+# Editable install means git pull above has already propagated source changes;
+# a re-install only matters when pyproject.toml dependencies have changed
+# (e.g. a fastmcp pin bump). Doing it unconditionally is cheap and keeps drift
+# from accumulating silently.
+VENV_DIR="$HOME/.briefings/venv"
+VENV_PY="$VENV_DIR/bin/python"
+
+if [ ! -x "$VENV_PY" ]; then
+    warn "Runtime venv missing at $VENV_DIR. Re-run install.sh to set it up."
+else
+    info "Refreshing briefings_mcp package..."
+    if "$VENV_PY" -m pip install --quiet --editable "$SCRIPT_DIR"; then
+        ok "briefings_mcp refreshed (editable install)."
+    else
+        warn "pip install failed. Re-run: $VENV_PY -m pip install --editable $SCRIPT_DIR"
+    fi
+
+    # Re-validate MCP registration. If the entry was removed (e.g. user reset
+    # claude config), re-add it pointing at the same venv python.
+    CLAUDE_BIN="$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")"
+    if [ -x "$CLAUDE_BIN" ] || command -v claude >/dev/null 2>&1; then
+        if "$CLAUDE_BIN" mcp list 2>/dev/null | grep -qE '^briefings:'; then
+            ok "MCP server 'briefings' is registered."
+        else
+            info "MCP server 'briefings' not registered. Adding..."
+            if "$CLAUDE_BIN" mcp add briefings --scope user -- "$VENV_PY" -m briefings_mcp >/dev/null 2>&1; then
+                ok "MCP server registered."
+            else
+                warn "Could not register. Run: $CLAUDE_BIN mcp add briefings --scope user -- $VENV_PY -m briefings_mcp"
+            fi
+        fi
+    else
+        warn "claude CLI not found. Skipping MCP re-registration check."
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}${BOLD}Update complete!${NC} Now on version $NEW_VERSION."
 echo ""

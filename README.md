@@ -44,21 +44,32 @@ cd meeting-intelligence
 bash update.sh
 ```
 
-`update.sh` pulls the latest from git and replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`. Your config is untouched. The launchd job keeps running.
+`update.sh` pulls the latest from git, replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`, and refreshes the editable install of the `briefings_mcp` package in the runtime venv at `~/.briefings/venv`. Your config and your decision ledger are untouched. The launchd job keeps running.
+
+After updating, you can sanity-check the install end-to-end:
+
+```bash
+bash scripts/verify-v1.sh
+```
+
+Add `--with-email` to also send a fixture follow-up to your `MY_EMAIL` to exercise the why-capture reply path.
 
 ## Layout
 
 ```
 meeting-intelligence/
-├── install.sh              # Installs prerequisites, slash commands, scheduler
+├── install.sh              # Installs prerequisites, slash commands, scheduler, MCP server
 ├── update.sh               # Pulls latest, re-installs without re-asking config
+├── pyproject.toml          # briefings_mcp package metadata (fastmcp dep)
 ├── .claude-plugin/
 │   └── plugin.json         # Plugin manifest
 ├── commands/
 │   ├── briefing.md         # /briefing slash command
 │   └── follow-up.md        # /follow-up slash command
+├── briefings_mcp/          # Local MCP server + ledger module (Python)
 ├── scripts/
-│   └── scheduler.sh        # The 15-minute scheduler with pre-flight gate
+│   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
+│   └── verify-v1.sh        # End-to-end smoke test
 └── README.md
 ```
 
@@ -71,7 +82,11 @@ After install, files land here:
 ~/Briefings/scheduler.log              # Rolling log, capped at 500KB
 ~/Briefings/YYYY-MM-DD-HHmm-*.md       # One briefing per meeting
 ~/Briefings/YYYY-MM-DD-HHmm-followup-*.md
-~/.briefings_config                    # MY_EMAIL and COMPANY_DOMAIN
+~/Briefings/*-awaiting-why-*.md        # Why-capture state, awaiting email reply
+~/.briefings_config                    # MY_EMAIL, COMPANY_DOMAIN, LOOKBACK_DAYS
+~/.briefings/decisions.jsonl           # Decision + commitment ledger (mode 600)
+~/.briefings/decisions.db              # SQLite index, rebuilt on JSONL change
+~/.briefings/venv/                     # Runtime venv for briefings_mcp + fastmcp
 ~/.slack_webhook                       # Optional Slack incoming webhook URL
 ~/Library/LaunchAgents/com.<user>.briefings.plist
 ```
@@ -83,9 +98,12 @@ After install, files land here:
 ```
 MY_EMAIL=you@example.com
 COMPANY_DOMAIN=example.com
+LOOKBACK_DAYS=60
 ```
 
-Edit either value and re-run `update.sh` (or just edit the file; the commands read it on every run).
+`LOOKBACK_DAYS` controls how far back the briefing's `Delta:` section looks for prior touchpoints with overlapping attendees. The default of 60 catches quarterly cycles without dredging up stale context — drop it to 30 if you want a tighter window, raise it to 90 if you want longer memory.
+
+Edit any value and re-run `update.sh` (or just edit the file; the commands read it on every run).
 
 ## What context Claude pulls
 
@@ -110,6 +128,20 @@ Each briefing draws on whichever of these sources have something relevant. Nothi
 - Other Drive docs modified in the last 14 days whose titles or contents match the meeting topic
 - **Prep notes** at the bottom: 3 to 5 bullets of synthesised advice (what to lead with, open threads to address, sensitive dynamics, good questions to ask, what success looks like for this meeting)
 
+## Decision ledger and MCP server
+
+Every `/follow-up` writes the decisions and commitments it extracts to an append-only ledger at `~/.briefings/decisions.jsonl`. The next briefing for the same people uses that ledger to fill a `Delta:` section — what changed since the last touchpoint — so the SITREP that lands in your inbox already knows what's still open with this person and what was last decided. High-stakes entries get a numbered "Why?" prompt attached to the follow-up email; reply with `1: <reason>` and the scheduler folds your reason back into the ledger on its next 15-minute cycle.
+
+A local read-only MCP server (`briefings_mcp`) exposes the ledger to anything else that speaks MCP — Claude Desktop, Claude Code in unrelated projects, future MCP consumers — via three tools:
+
+- `search_decisions(attendee, topic, type, date_from, date_to, state, limit)`
+- `get_decision_by_id(id)`
+- `list_attendees(limit)`
+
+The server runs from a dedicated Python venv at `~/.briefings/venv` and is registered automatically by `install.sh` via `claude mcp add briefings --scope user`. Confirm with `claude mcp list | grep briefings`.
+
+The briefing itself reads the ledger inline (no MCP roundtrip on the hot path); the MCP server is purely the read path for external agents.
+
 ## How meetings get classified
 
 - **Internal**: every attendee has an `@COMPANY_DOMAIN` address
@@ -123,7 +155,7 @@ Every 15 minutes the scheduler does this in plain bash before touching Claude:
 1. Check gws OAuth token. If expired, notify Slack and exit
 2. Pull the next 2 hours of calendar events
 3. Decide whether any meeting needs a briefing (no briefing file on disk yet and starts within 2h) or a follow-up (ended in the last 2 days, no follow-up file yet)
-4. Check for any `*-awaiting-*.md` files indicating pending transcript replies
+4. Check for any `*-awaiting-*.md` files indicating pending transcript or why-capture replies
 
 If nothing needs doing, it exits without invoking Claude. In practice this skips about 90% of runs, which keeps Claude usage predictable. When both a briefing and a follow-up are needed, it does one combined Claude call instead of two.
 

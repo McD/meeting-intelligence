@@ -194,7 +194,7 @@ ok "/briefing and /follow-up installed."
 
 echo ""
 echo -e "${YELLOW}Note:${NC} If you have Claude Code open in another window, close and"
-echo "reopen it so the new commands are picked up before the Step 11 test."
+echo "reopen it so the new commands are picked up before the Step 12 test."
 
 # ── Step 9: Scheduler ────────────────────────────────────────────────────────
 echo ""
@@ -259,9 +259,110 @@ PLIST_EOF
 launchctl load "$PLIST_PATH"
 ok "Scheduler installed and running (fires every 15 min)."
 
-# ── Step 10: Enable Claude integrations ──────────────────────────────────────
+# ── Step 10: Ledger + MCP server ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 10: Enable Claude integrations${NC}"
+echo -e "${BOLD}Step 10: Decision ledger and MCP server${NC}"
+#
+# v1 adds a JSONL decision ledger at ~/.briefings/decisions.jsonl and a local
+# read-only MCP server (briefings_mcp) so /briefing can pull "what did we last
+# decide with these attendees" inline and external Claude sessions can query
+# the same corpus.
+#
+# Runtime layout decision: a dedicated Python venv at ~/.briefings/venv with an
+# editable install of this repo. The alternatives were considered and rejected:
+#   * `pip install --user` collides with PEP 668 on brew Python (which is what
+#     macOS users actually have, since /usr/bin/python3 is pinned to 3.9 and
+#     pyproject.toml requires >=3.10).
+#   * `uv tool install` would be cleaner but isn't yet a baseline tool here;
+#     adding it just for this would be friction for everyone.
+# A venv is in stdlib, never collides with system packages, and editable
+# install means `git pull` + `update.sh` picks up briefings_mcp/ changes with
+# no re-install. The MCP server is registered as the absolute venv-python
+# path, so `python -m briefings_mcp` resolves from any cwd Claude launches in.
+
+# Step 10a: detect (or install) a Python >=3.10
+RUNTIME_PYTHON=""
+for candidate in python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        RUNTIME_PYTHON="$(command -v "$candidate")"
+        break
+    fi
+done
+if [ -z "$RUNTIME_PYTHON" ] && command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+        RUNTIME_PYTHON="$(command -v python3)"
+    fi
+fi
+if [ -z "$RUNTIME_PYTHON" ]; then
+    info "No Python ≥3.10 found. Installing via Homebrew..."
+    brew install python@3.13
+    RUNTIME_PYTHON="$(command -v python3.13)"
+    [ -z "$RUNTIME_PYTHON" ] && fail "Could not install python3.13. Run 'brew install python@3.13' manually, then re-run install.sh."
+fi
+ok "Using Python: $RUNTIME_PYTHON ($("$RUNTIME_PYTHON" --version 2>&1))"
+
+# Step 10b: ledger directory + runtime venv (idempotent)
+umask 077
+mkdir -p "$HOME/.briefings"
+chmod 700 "$HOME/.briefings"
+
+VENV_DIR="$HOME/.briefings/venv"
+VENV_PY="$VENV_DIR/bin/python"
+if [ ! -x "$VENV_PY" ]; then
+    info "Creating runtime venv at $VENV_DIR..."
+    "$RUNTIME_PYTHON" -m venv "$VENV_DIR" || fail "Could not create venv at $VENV_DIR"
+    ok "Runtime venv created."
+else
+    ok "Runtime venv exists at $VENV_DIR."
+fi
+
+# Step 10c: install briefings_mcp editable so git pull propagates changes
+info "Installing briefings_mcp package (editable from $SCRIPT_DIR)..."
+"$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || warn "pip upgrade failed; continuing."
+if ! "$VENV_PY" -m pip install --quiet --editable "$SCRIPT_DIR"; then
+    fail "Could not install briefings_mcp. Re-run: $VENV_PY -m pip install --editable $SCRIPT_DIR"
+fi
+"$VENV_PY" -c "import briefings_mcp; import fastmcp" 2>/dev/null \
+    || fail "briefings_mcp or fastmcp not importable from $VENV_PY after install."
+ok "briefings_mcp installed (editable). fastmcp resolved."
+
+# Step 10d: initialise the ledger file (never truncate — preserves prior decisions)
+if [ ! -f "$HOME/.briefings/decisions.jsonl" ]; then
+    touch "$HOME/.briefings/decisions.jsonl"
+    chmod 600 "$HOME/.briefings/decisions.jsonl"
+    ok "Created ~/.briefings/decisions.jsonl (mode 600)."
+else
+    chmod 600 "$HOME/.briefings/decisions.jsonl"
+    ok "Ledger file already exists; preserved untouched."
+fi
+
+# Step 10e: append LOOKBACK_DAYS=60 to ~/.briefings_config (idempotent;
+# double-append would not break anything but would clutter the config)
+if ! grep -q '^LOOKBACK_DAYS=' "$HOME/.briefings_config" 2>/dev/null; then
+    umask 077
+    echo "LOOKBACK_DAYS=60" >> "$HOME/.briefings_config"
+    ok "Added LOOKBACK_DAYS=60 to ~/.briefings_config."
+else
+    ok "LOOKBACK_DAYS already configured in ~/.briefings_config."
+fi
+
+# Step 10f: register MCP server (idempotent — `claude mcp add` would re-add,
+# so skip if already registered)
+if "$CLAUDE" mcp list 2>/dev/null | grep -qE '^briefings:'; then
+    ok "MCP server 'briefings' already registered."
+else
+    info "Registering briefings MCP server with Claude Code..."
+    if "$CLAUDE" mcp add briefings --scope user -- "$VENV_PY" -m briefings_mcp >/dev/null 2>&1; then
+        ok "MCP server registered (user scope): briefings → $VENV_PY -m briefings_mcp"
+    else
+        warn "claude mcp add failed. Register manually with:"
+        warn "  $CLAUDE mcp add briefings --scope user -- $VENV_PY -m briefings_mcp"
+    fi
+fi
+
+# ── Step 11: Enable Claude integrations ──────────────────────────────────────
+echo ""
+echo -e "${BOLD}Step 11: Enable Claude integrations${NC}"
 echo ""
 echo -e "${YELLOW}One manual step required:${NC}"
 echo ""
@@ -275,9 +376,9 @@ open "https://claude.ai/settings/integrations" 2>/dev/null || \
 echo ""
 read -rp "Once you've enabled the integrations, press Enter..."
 
-# ── Step 11: Test ────────────────────────────────────────────────────────────
+# ── Step 12: Test ────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 11: Running a test${NC}"
+echo -e "${BOLD}Step 12: Running a test${NC}"
 info "Asking Claude to check for upcoming meetings (takes ~30 seconds)..."
 echo ""
 "$CLAUDE" -p --dangerously-skip-permissions "Run /briefing all" 2>&1 | tail -10
@@ -299,4 +400,6 @@ echo "Useful commands:"
 echo "  launchctl list | grep briefings    — confirm scheduler is running"
 echo "  tail -30 ~/Briefings/scheduler.log — see what the scheduler has done"
 echo "  bash <repo>/update.sh              — pull the latest version"
+echo "  bash <repo>/scripts/verify-v1.sh   — end-to-end smoke check"
+echo "  claude mcp list | grep briefings   — confirm MCP server is registered"
 echo ""
