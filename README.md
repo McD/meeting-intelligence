@@ -26,7 +26,7 @@ The installer sets up Homebrew, Node.js, [Claude Code](https://claude.com/claude
 ## Install
 
 ```bash
-git clone https://github.com/mcd/meeting-intelligence.git
+git clone https://github.com/McD/meeting-intelligence.git
 cd meeting-intelligence
 bash install.sh
 ```
