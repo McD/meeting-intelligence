@@ -381,7 +381,50 @@ echo ""
 echo -e "${BOLD}Step 12: Running a test${NC}"
 info "Asking Claude to check for upcoming meetings (takes ~30 seconds)..."
 echo ""
+
+# Snapshot latest briefing's mtime so we can detect whether /briefing produced
+# something new in this run (vs reporting on a pre-existing file).
+PRE_MTIME=0
+PRE_LATEST=$(ls -t "$HOME"/Briefings/*.md 2>/dev/null \
+    | grep -vE 'followup|awaiting|scheduler' | head -1 || true)
+if [ -n "$PRE_LATEST" ] && [ -f "$PRE_LATEST" ]; then
+    PRE_MTIME=$(stat -f '%m' "$PRE_LATEST" 2>/dev/null \
+        || stat -c '%Y' "$PRE_LATEST" 2>/dev/null || echo 0)
+fi
+
 "$CLAUDE" -p --dangerously-skip-permissions "Run /briefing all" 2>&1 | tail -10
+echo ""
+
+# Soft SITREP-shape assertion — best-effort, never fails the install. If no
+# upcoming meeting exists in calendar, /briefing emits nothing and there's
+# nothing to assert; if assertion fails it's a heads-up, not a blocker
+# (a failed assertion here doesn't undo any of Steps 1–11).
+LATEST=$(ls -t "$HOME"/Briefings/*.md 2>/dev/null \
+    | grep -vE 'followup|awaiting|scheduler' | head -1 || true)
+if [ -n "$LATEST" ] && [ -f "$LATEST" ]; then
+    CUR_MTIME=$(stat -f '%m' "$LATEST" 2>/dev/null \
+        || stat -c '%Y' "$LATEST" 2>/dev/null || echo 0)
+    if [ "$CUR_MTIME" -gt "$PRE_MTIME" ]; then
+        info "Checking SITREP shape in $(basename "$LATEST")..."
+        VERDICT_RE='^# (DECIDE-TODAY|DELEGATE|DEFER|DECLINE|PREP-HARD|LOW-STAKES|MOVE-ASYNC) — '
+        MISSING=0
+        grep -qE "$VERDICT_RE"    "$LATEST" || { warn "verdict heading from closed set missing"; MISSING=1; }
+        grep -qE '^## SITREP'     "$LATEST" || { warn "SITREP block missing";                  MISSING=1; }
+        grep -qE '^\*\*Trap:\*\*' "$LATEST" || { warn "Trap label missing";                    MISSING=1; }
+        grep -qE '^\*\*Delta:\*\*' "$LATEST" || { warn "Delta label missing";                  MISSING=1; }
+        grep -qE '^\*\*Comment:\*\*' "$LATEST" || { warn "Comment label missing";              MISSING=1; }
+        if [ "$MISSING" -eq 0 ]; then
+            VERDICT=$(grep -E -m1 -o "$VERDICT_RE" "$LATEST" 2>/dev/null | awk '{print $2}')
+            ok "Briefing landed with the SITREP shape (verdict: $VERDICT)."
+        else
+            warn "Briefing landed but SITREP markers were incomplete — see file for context."
+            warn "  bash $SCRIPT_DIR/scripts/verify-v1.sh --with-briefing for a fresh check."
+        fi
+    else
+        info "No new briefing this run (no upcoming meeting, or one was already on disk)."
+        info "  bash $SCRIPT_DIR/scripts/verify-v1.sh --with-briefing to force a fresh one."
+    fi
+fi
 echo ""
 
 # ── Done ─────────────────────────────────────────────────────────────────────
