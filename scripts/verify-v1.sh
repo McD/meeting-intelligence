@@ -292,18 +292,16 @@ if [ "$WITH_EMAIL" -eq 1 ]; then
         fail "gws CLI" "not found — install via 'npm install -g @googleworkspace/cli'"
     else
         info "Sending a fixture follow-up to $MY_EMAIL..."
-        tmp_body=$(mktemp)
-        cat > "$tmp_body" <<BODY
-This is a verify-v1.sh test message. Reply with the following two lines to
-exercise the why-capture path on the next scheduler cycle:
+        body=$(cat <<'BODY'
+This is a verify-v1.sh test message. Reply with the following two lines to exercise the why-capture path on the next scheduler cycle:
 
 1: testing the why-capture loop end-to-end
 2: confirming reply parsing strips quoted text correctly
 
-The scheduler runs every 15 minutes. After replying, watch
-~/Briefings/scheduler.log for the parse to flow through.
+The scheduler runs every 15 minutes. After replying, watch ~/Briefings/scheduler.log for the parse to flow through.
 BODY
-        if gws gmail +send --to "$MY_EMAIL" --subject "[verify-v1] why-capture test" --body-file "$tmp_body" >/dev/null 2>&1; then
+)
+        if gws gmail +send --to "$MY_EMAIL" --subject "[verify-v1] why-capture test" --body "$body" >/dev/null 2>&1; then
             pass "Test follow-up sent to $MY_EMAIL"
             info "Reply with '1: <reason>' and '2: <reason>' to trigger U3."
             info "Note: this only exercises the email-send path; the actual why-capture"
@@ -312,7 +310,6 @@ BODY
         else
             fail "gws gmail +send" "send failed"
         fi
-        rm -f "$tmp_body"
     fi
 else
     section "8. Manual email test (skipped)"
