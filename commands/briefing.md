@@ -231,15 +231,16 @@ Then stop. Don't generate a briefing.
 
 ## Generate a briefing
 
-**Before doing anything else**, read the delivery email address:
+**Before doing anything else**, read your config:
 ```bash
 MY_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
-if [ -z "$MY_EMAIL" ]; then
-    echo "Error: MY_EMAIL not configured. Run the meeting-intelligence installer, or add MY_EMAIL=you@example.com to ~/.briefings_config" >&2
+COMPANY_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+if [ -z "$MY_EMAIL" ] || [ -z "$COMPANY_DOMAIN" ]; then
+    echo "Error: ~/.briefings_config missing MY_EMAIL or COMPANY_DOMAIN. Run the meeting-intelligence installer." >&2
     exit 1
 fi
 ```
-Use `$MY_EMAIL` for all email delivery throughout this command.
+Use `$MY_EMAIL` for all email delivery throughout this command. `$COMPANY_DOMAIN` is your company's internal email domain, used for internal/external classification below.
 
 ### Step 1: Find the target meeting(s)
 
@@ -254,8 +255,8 @@ Use Google Calendar to get today's remaining events.
 If no meetings fall within this window, respond with a single line: "No meetings to brief in the next 2 hours." Do **not** list upcoming meetings on future days, do **not** offer to generate briefings for them, and do **not** generate any briefing files. Stop.
 
 **Classify each meeting as internal or external:**
-- **Internal**: all attendees have @{{COMPANY_DOMAIN}} email addresses
-- **External**: any attendee has a domain outside {{COMPANY_DOMAIN}} (and not a domain you've sent 50+ emails to in the last 90 days — treat those as "internal-adjacent" and classify as internal)
+- **Internal**: all attendees have @$COMPANY_DOMAIN email addresses
+- **External**: any attendee has a domain outside $COMPANY_DOMAIN (and not a domain you've sent 50+ emails to in the last 90 days — treat those as "internal-adjacent" and classify as internal)
 - **Mixed**: some internal, some external attendees — treat as external
 
 For each target meeting, check if a briefing already exists at `~/Briefings/` matching the date and a slug of the meeting name. If it exists, skip it and move to the next.
@@ -277,7 +278,7 @@ For each meeting, pull:
 
 ### Step 3: Research attendees
 
-**For external attendees** (non-{{COMPANY_DOMAIN}} domains):
+**For external attendees** (non-$COMPANY_DOMAIN domains):
 
 **Gmail** (last 90 days):
 - Search for threads involving their email address
@@ -305,7 +306,7 @@ If an attendee has no email history, no shared docs, and no past calls, just lis
 
 ---
 
-**For internal attendees** ({{COMPANY_DOMAIN}} — for internal or mixed meetings):
+**For internal attendees** ($COMPANY_DOMAIN — for internal or mixed meetings):
 
 **Slack** (last 30 days) — primary source:
 - Search for recent messages from them in shared channels

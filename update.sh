@@ -43,12 +43,12 @@ else
 fi
 
 # ── Check sidecar files exist ────────────────────────────────────────────────
-for f in templates/briefing.md templates/follow-up.md templates/scheduler.sh; do
+for f in commands/briefing.md commands/follow-up.md scripts/scheduler.sh; do
     [ -f "$SCRIPT_DIR/$f" ] || fail "Missing required file: $f"
 done
 
 # ── Show version change ──────────────────────────────────────────────────────
-NEW_VERSION=$(grep -m1 'version:' "$SCRIPT_DIR/templates/briefing.md" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "unknown")
+NEW_VERSION=$(grep -m1 'version:' "$SCRIPT_DIR/commands/briefing.md" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "unknown")
 OLD_VERSION=$(grep -m1 'version:' ~/.claude/commands/briefing.md 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "unknown")
 if [ "$NEW_VERSION" = "$OLD_VERSION" ] && [ "$OLD_VERSION" != "unknown" ]; then
     info "Already on latest version ($OLD_VERSION). Re-applying anyway."
@@ -56,15 +56,15 @@ else
     info "Updating from $OLD_VERSION → $NEW_VERSION"
 fi
 
-# ── Re-install command files (with substitution) ─────────────────────────────
+# ── Re-install command files ─────────────────────────────────────────────────
 mkdir -p ~/.claude/commands
-sed "s|{{COMPANY_DOMAIN}}|$COMPANY_DOMAIN|g" "$SCRIPT_DIR/templates/briefing.md"  > ~/.claude/commands/briefing.md
-sed "s|{{COMPANY_DOMAIN}}|$COMPANY_DOMAIN|g" "$SCRIPT_DIR/templates/follow-up.md" > ~/.claude/commands/follow-up.md
+cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
+cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
 ok "briefing.md and follow-up.md updated."
 
 # ── Re-install scheduler ─────────────────────────────────────────────────────
 mkdir -p ~/Briefings
-cp "$SCRIPT_DIR/templates/scheduler.sh" ~/Briefings/scheduler.sh
+cp "$SCRIPT_DIR/scripts/scheduler.sh" ~/Briefings/scheduler.sh
 chmod +x ~/Briefings/scheduler.sh
 ok "scheduler.sh updated."
 

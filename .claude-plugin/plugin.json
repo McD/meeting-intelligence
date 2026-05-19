@@ -1,0 +1,9 @@
+{
+  "name": "meeting-intelligence",
+  "version": "0.1.0",
+  "description": "Automated pre-meeting briefings and post-meeting follow-ups, pulling cross-source context from Gmail, Drive, Slack, and prior call transcripts.",
+  "author": {
+    "name": "Mark McDermott"
+  },
+  "homepage": "https://github.com/mcd/meeting-intelligence"
+}

@@ -1,13 +1,16 @@
 # meeting-intelligence
 
-Automated pre-meeting briefings and post-meeting follow-ups, powered by Claude Code and your Google Workspace account.
+Automated pre-meeting briefings and post-meeting follow-ups, powered by Claude Code and your Google Workspace and Slack accounts.
 
-Every 15 minutes a background scheduler checks your calendar. About two hours before a meeting, it generates a briefing (attendees, recent email threads with externals, prior call transcripts, related Drive docs, prep notes) and delivers it to your inbox and a private Slack channel. Within 75 minutes of a meeting ending, it finds the Gemini, Teams, or MacWhisper transcript, extracts actions and decisions, and sends a follow-up. If no transcript is found, it emails you a request that you can reply to with the transcript, "cancel", or "extend".
+Every 15 minutes a background scheduler checks your calendar. About two hours before a meeting, it generates a briefing and delivers it to your inbox and a private Slack channel. Within 75 minutes of a meeting ending, it finds the Gemini, Teams, or MacWhisper transcript, extracts actions and decisions, and sends a follow-up. If no transcript is found, it emails you a request that you can reply to with the transcript, "cancel", or "extend".
+
+The thing that makes the briefings actually useful is the cross-source context. For each attendee, Claude reads your recent Gmail threads, prior call transcripts, Drive docs they've touched, and Slack messages where their name has come up. For internal meetings, Slack is the primary signal: what has this person been saying in shared channels, what's the ongoing work between the two of you, what's currently live around the meeting topic. By the time the briefing lands in your inbox, you walk in already knowing where things stand.
 
 ## What you get
 
 - `/briefing` and `/follow-up` slash commands inside Claude Code
 - A `scheduler.sh` that runs every 15 minutes via launchd and decides whether there's any work to do before invoking Claude (skips about 90% of cycles)
+- Multi-source context: Gmail, Drive, Slack, prior call transcripts
 - Email and Slack delivery
 - Idempotent installer that's safe to re-run
 
@@ -23,12 +26,22 @@ The installer sets up Homebrew, Node.js, [Claude Code](https://claude.com/claude
 ## Install
 
 ```bash
-git clone https://github.com/<your-user>/meeting-intelligence.git
+git clone https://github.com/mcd/meeting-intelligence.git
 cd meeting-intelligence
 bash install.sh
 ```
 
-The installer asks for two things: the email address briefings should be sent to, and your company's email domain (used to classify meetings as internal vs external). Both are saved to `~/.briefings_config`.
+The installer asks for two things: the email address briefings should be sent to, and your company's email domain (used to classify meetings as internal vs external). Both are saved to `~/.briefings_config`. The slash commands read this config at runtime, so updating either value is just a matter of editing the file (no re-install needed).
+
+### Alternative: install as a Claude Code plugin
+
+The repo is also a valid Claude Code plugin. If you'd rather skip the `cp` step that `install.sh` does for the slash commands, you can install them via the plugin system instead:
+
+```
+/plugin install mcd/meeting-intelligence
+```
+
+You still need to run `install.sh` once to set up Homebrew, Node.js, gws, the scheduler, and the launchd job. Pass `--skip-commands` to stop it copying the slash commands when you're installing them via the plugin instead. (Not implemented yet; for now, accept the duplicate copy or comment out Step 8 in `install.sh`.)
 
 ## Update
 
@@ -37,17 +50,20 @@ cd meeting-intelligence
 bash update.sh
 ```
 
-`update.sh` pulls the latest commands from git, re-applies your saved config, and replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`. The launchd job keeps running.
+`update.sh` pulls the latest from git and replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`. Your config is untouched. The launchd job keeps running.
 
 ## Layout
 
 ```
 meeting-intelligence/
-├── install.sh              # Installs prerequisites, templates, scheduler
+├── install.sh              # Installs prerequisites, slash commands, scheduler
 ├── update.sh               # Pulls latest, re-installs without re-asking config
-├── templates/
-│   ├── briefing.md         # /briefing slash command, with {{COMPANY_DOMAIN}}
-│   ├── follow-up.md        # /follow-up slash command
+├── .claude-plugin/
+│   └── plugin.json         # Plugin manifest
+├── commands/
+│   ├── briefing.md         # /briefing slash command
+│   └── follow-up.md        # /follow-up slash command
+├── scripts/
 │   └── scheduler.sh        # The 15-minute scheduler with pre-flight gate
 └── README.md
 ```
@@ -55,7 +71,7 @@ meeting-intelligence/
 After install, files land here:
 
 ```
-~/.claude/commands/briefing.md         # Substituted copy of the template
+~/.claude/commands/briefing.md         # Copy of the slash command
 ~/.claude/commands/follow-up.md
 ~/Briefings/scheduler.sh
 ~/Briefings/scheduler.log              # Rolling log, capped at 500KB
@@ -77,15 +93,34 @@ COMPANY_DOMAIN=example.com
 
 Edit either value and re-run `update.sh` (or just edit the file; the commands read it on every run).
 
-## How meetings get classified
+## What context Claude pulls
 
-Each meeting is tagged internal, external, or mixed based on attendee domains.
+Each briefing draws on whichever of these sources have something relevant. Nothing is included if it's empty, so briefings stay scannable.
+
+**For external attendees** (domains outside your `COMPANY_DOMAIN`):
+
+- **Gmail** — last 5 threads involving their address, each with a one-line status summary ("awaiting their response on pricing", "closed, they confirmed the March timeline")
+- **Prior call transcripts** — Gemini, Teams Recap, or Google Doc transcripts from the last 6 months that mention them, summarised as 2 to 4 bullets covering what was agreed and what was left open
+- **Drive** — docs shared with or by them, or containing their name, in the last 90 days
+- **Slack** — any messages in the last 30 days where their name or email appears, summarised in 2 to 3 lines
+
+**For internal attendees** (your own colleagues), Slack is the primary signal:
+
+- **Slack** — recent messages from them in shared channels, anything related to the meeting topic, ongoing work between the two of you
+- **Prior call transcripts** — same as above, focused on open actions or decisions relevant to this meeting
+- **Drive** — recently shared or modified docs that relate to the meeting topic
+
+**Always included:**
+
+- Any Google Doc, Sheet, or Slide linked from the calendar invite, fetched and summarised in 2 to 3 sentences
+- Other Drive docs modified in the last 14 days whose titles or contents match the meeting topic
+- **Prep notes** at the bottom: 3 to 5 bullets of synthesised advice (what to lead with, open threads to address, sensitive dynamics, good questions to ask, what success looks like for this meeting)
+
+## How meetings get classified
 
 - **Internal**: every attendee has an `@COMPANY_DOMAIN` address
 - **External**: at least one attendee is outside that domain
 - **Mixed**: treated as external
-
-External briefings include Gmail thread history, prior call transcripts, and Drive doc context for each external attendee. Internal briefings focus on Slack context and shared docs.
 
 ## How the scheduler decides whether to run Claude
 

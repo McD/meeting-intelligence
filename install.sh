@@ -43,7 +43,7 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
 fi
 
 # ── Required sidecar files ───────────────────────────────────────────────────
-for f in templates/briefing.md templates/follow-up.md templates/scheduler.sh; do
+for f in commands/briefing.md commands/follow-up.md scripts/scheduler.sh; do
     [ -f "$SCRIPT_DIR/$f" ] || fail "Missing required file: $f (run install.sh from the cloned repo)"
 done
 
@@ -189,9 +189,8 @@ echo ""
 echo -e "${BOLD}Step 8: Installing slash commands${NC}"
 mkdir -p ~/.claude/commands
 
-# Substitute placeholders into the command templates
-sed "s|{{COMPANY_DOMAIN}}|$COMPANY_DOMAIN|g" "$SCRIPT_DIR/templates/briefing.md"  > ~/.claude/commands/briefing.md
-sed "s|{{COMPANY_DOMAIN}}|$COMPANY_DOMAIN|g" "$SCRIPT_DIR/templates/follow-up.md" > ~/.claude/commands/follow-up.md
+cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
+cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
 ok "/briefing and /follow-up installed."
 
 echo ""
@@ -203,7 +202,7 @@ echo ""
 echo -e "${BOLD}Step 9: Background scheduler${NC}"
 umask 077
 mkdir -p ~/Briefings
-cp "$SCRIPT_DIR/templates/scheduler.sh" ~/Briefings/scheduler.sh
+cp "$SCRIPT_DIR/scripts/scheduler.sh" ~/Briefings/scheduler.sh
 chmod +x ~/Briefings/scheduler.sh
 ok "Scheduler script installed."
 
