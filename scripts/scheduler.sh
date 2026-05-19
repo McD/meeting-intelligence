@@ -62,7 +62,7 @@ TIME_MIN=$(date -u -v-2d +%Y-%m-%dT%H:%M:%SZ)
 TIME_MAX=$(date -u -v+2H +%Y-%m-%dT%H:%M:%SZ)
 CAL_EVENTS=$("$GWS" calendar events list --params "{\"calendarId\":\"primary\",\"timeMin\":\"$TIME_MIN\",\"timeMax\":\"$TIME_MAX\",\"singleEvents\":true,\"orderBy\":\"startTime\"}" 2>&1)
 
-if echo "$CAL_EVENTS" | grep -q "401\|invalid_grant\|Token has been expired or revoked\|OAuth token has expired"; then
+if echo "$CAL_EVENTS" | grep -q "invalid_grant\|Token has been expired or revoked\|OAuth token has expired"; then
     log "ERROR: gws auth check failed — token needs refresh."
     touch "$GWS_AUTH_FAILED_FILE"
     notify_slack ":key: Briefings paused — gws OAuth token expired. Run \`gws auth login\` in your terminal to re-authenticate."
