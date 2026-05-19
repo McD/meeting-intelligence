@@ -27,11 +27,77 @@ Check `$ARGUMENTS`:
 
 ---
 
-## Step 0: Check for pending transcript requests
+## Step 0: Check for pending email replies
 
 Before anything else, scan `~/Briefings/` for files matching `*-awaiting-*.md`.
 
-For each awaiting file found:
+**Dispatch by filename.** The single glob covers two distinct state-file shapes that use the same `*-awaiting-*.md` naming convention. Inspect each match's basename:
+
+- If the basename contains `-awaiting-why-` (e.g. `2026-05-19-1500-awaiting-why-acme-renewal.md`) → follow the **Why-capture branch** below (added in U3 for R14).
+- Otherwise (basename contains `-awaiting-` but not `-awaiting-why-`) → follow the **Transcript-request branch** below (the original flow).
+
+Process every awaiting file before falling through to Step 1.
+
+---
+
+### Why-capture branch
+
+These state files were written by Step 6 of a prior follow-up run when high-stakes entries were appended to the ledger. Each one records the Gmail thread the user can reply to and the ledger entry UUIDs pending a `why` answer.
+
+1. Read the file — flat frontmatter, one key per line:
+   - `thread_id:` — Gmail thread ID of the follow-up email
+   - `meeting:` — meeting name
+   - `slug:` — the date+time meeting slug
+   - `pending_entry_ids:` — JSON array of ledger entry UUIDs awaiting `why`, in the order they appeared as `1: …`, `2: …`, etc. under the `## Why?` section of the follow-up email
+   - `created_at:` — ISO timestamp when the follow-up was sent
+
+2. **Check expiry**: if `created_at` is more than 7 days ago:
+   - Delete the awaiting-why file
+   - Log `"Why-capture expired for [meeting] — no reply received"` to `~/Briefings/scheduler.log`
+   - Skip this entry
+
+3. **Check Gmail thread for a reply** using the stored thread ID:
+   ```bash
+   gws gmail users threads get --params '{"userId": "me", "id": "[thread_id]"}'
+   ```
+   If the `messages` array has more than 1 entry, a reply exists. Use the **last** message in the array — its `id` is the reply to read.
+
+4. **If no reply yet** (only 1 message in thread) — skip. The scheduler will check again on the next 15-minute cycle.
+
+5. **If a reply is found**:
+   - Read the reply body: `gws gmail +read --message-id "[message_id]"`
+   - Parse the body and apply updates by calling `briefings_mcp.why_capture.parse_and_update`. The parser strips quoted lines (`>` prefix is universal across Gmail/Apple Mail/Outlook/phone clients), matches each remaining line against `^\s*(\d+):\s+(.+)$`, indexes `N` into `pending_entry_ids` at position `N-1`, and updates that ledger entry's `why`. Unmatched non-quoted prose appends to `why_notes` on the **last** entry in `pending_entry_ids` — the most-recently-prompted entry from this thread. See `briefings_mcp/why_capture.py` for the parser; the heredoc here is the thin shell that loads inputs and emits JSON:
+
+     ```bash
+     PARSE_OUT=$(REPLY_BODY="$REPLY_BODY" \
+                 PENDING_IDS_JSON='["<uuid1>","<uuid2>","<uuid3>"]' \
+                 python3 <<'PYEOF'
+     import json, os
+     from briefings_mcp import why_capture
+
+     reply = os.environ.get("REPLY_BODY", "")
+     pending = json.loads(os.environ.get("PENDING_IDS_JSON", "[]"))
+     print(json.dumps(why_capture.parse_and_update(reply, pending)))
+     PYEOF
+     )
+     ```
+
+   - Parse `$PARSE_OUT` as JSON:
+     - `matched_count` (int) — how many `N: …` lines updated a ledger entry on this cycle. Use for the log line.
+     - `all_answered` (bool) — true when every UUID in the original `pending_entry_ids` now has a non-empty `why` in the ledger.
+     - `warnings` (array of strings) — log each to `~/Briefings/scheduler.log` so out-of-range indices and ledger lookup failures stay visible. Do not abort on warnings.
+
+   - **If `all_answered` is true**: delete the awaiting-why file. Log `"Why-capture complete for [meeting] — N entries updated this cycle"`.
+
+   - **If `all_answered` is false**: leave the awaiting-why file untouched. The scheduler will re-poll on the next cycle; if a further reply lands, the same parser runs against the new latest message. Numbered matches are idempotent (same `why` value re-applied is a no-op); a prose dedupe guard in the parser (see `briefings_mcp/why_capture.py`) prevents `why_notes` from doubling up when the same reply is re-processed. Log `"Why-capture partial for [meeting] — N entries updated this cycle, awaiting more"`.
+
+   - Do **not** rewrite `pending_entry_ids` to drop matched indices: the index map must stay stable so subsequent replies can keep using `N` to address the same original entries. Completion is detected by reading ledger state, not by shrinking the pending list. Do **not** bump `created_at` either — the 7-day clock runs from the original follow-up send.
+
+---
+
+### Transcript-request branch
+
+For each transcript-awaiting file found:
 
 1. Read the file — it contains:
    - `thread_id:` — Gmail thread ID of the transcript request email
