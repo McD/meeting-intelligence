@@ -334,6 +334,8 @@ Skip Gmail for internal attendees. If an internal attendee has no Slack history,
 
 Save to `~/Briefings/YYYY-MM-DD-HHmm-meeting-slug.md` where the slug is the meeting title lowercased with spaces replaced by hyphens, truncated to 50 characters.
 
+**After writing the file, set its mode to 600 so it is readable only by the user**: `chmod 600 ~/Briefings/YYYY-MM-DD-HHmm-meeting-slug.md`. Briefings contain attendee emails, email-thread summaries, and prep notes — keep them off other accounts on the machine.
+
 **Prep notes** — always generate this section last, after all research is done. Write 3–5 bullet points that synthesise the most actionable advice based on everything gathered:
 - What to lead with or raise first
 - Any open threads or commitments from previous calls to address

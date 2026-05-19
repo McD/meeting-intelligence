@@ -221,6 +221,10 @@ cat > "$PLIST_PATH" <<PLIST_EOF
     <key>Label</key>
     <string>$LAUNCH_AGENT_LABEL</string>
 
+    <!-- 077 octal = 63 decimal. Forces scheduler.log to mode 600 from first creation. -->
+    <key>Umask</key>
+    <integer>63</integer>
+
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>

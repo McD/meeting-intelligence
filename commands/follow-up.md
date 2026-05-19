@@ -195,7 +195,7 @@ If the transcript is long, focus on the last 20% (actions cluster at the end) bu
 
 ## Step 4: Assemble the follow-up
 
-Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`:
+Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the file so it is readable only by the user (follow-ups contain meeting transcripts, attendee actions, and decisions — keep them off other accounts on the machine):
 
 ```markdown
 # Follow-up: [Meeting title]
