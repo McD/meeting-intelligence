@@ -1,89 +1,78 @@
 #!/bin/bash
-# Runs via cron every 15 minutes.
-# version: 2026-04-30 — combined briefing + follow-up into a single Claude call when both are needed.
+# Runs every 15 minutes via launchd.
+# version: 2026-05-19 — extracted notify_slack/log helpers, dropped redundant gmail probe.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
+GWS_AUTH_FAILED_FILE="$BRIEFING_DIR/.gws_auth_failed"
+CLAUDE_VERSION_FILE="$BRIEFING_DIR/.claude_version"
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
-GWS=/opt/homebrew/bin/gws
+GWS=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
 
 umask 077
 mkdir -p "$BRIEFING_DIR"
 
-# Log rotation: keep last 500 lines when log exceeds 500KB
+log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; }
+notify_slack() {
+    [ -n "$SLACK_WEBHOOK" ] || return 0
+    curl -s -X POST "$SLACK_WEBHOOK" \
+        -H 'Content-type: application/json' \
+        -d "{\"text\": \"$1\"}"
+}
+
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
     tail -500 "$BRIEFING_DIR/scheduler.log" > "$BRIEFING_DIR/scheduler.log.tmp"
     mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
 fi
 
-# Weekly cleanup: delete briefings older than 30 days (runs on Mondays before 9:16am)
+# Mondays before 09:16 (one cycle window) — keep ~Briefings/ from growing unbounded.
 if [ "$(date +%u)" = "1" ] && [[ "$(date +%H:%M)" < "09:16" ]]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
-    echo "[$(date '+%Y-%m-%d %H:%M')] Cleaned up files older than 30 days." >> "$BRIEFING_DIR/scheduler.log"
+    log "Cleaned up files older than 30 days."
 fi
 
-# Prevent overlapping runs
 if [ -f "$LOCK_FILE" ]; then
     pid=$(cat "$LOCK_FILE")
     if kill -0 "$pid" 2>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M')] Already running (PID $pid), skipping." >> "$BRIEFING_DIR/scheduler.log"
+        log "Already running (PID $pid), skipping."
         exit 0
     fi
 fi
 echo $$ > "$LOCK_FILE"
-trap "rm -f $LOCK_FILE" EXIT
+# Single quotes: $LOCK_FILE expands at trap-firing time, not trap-definition.
+trap 'rm -f "$LOCK_FILE"' EXIT
 
-# Pre-flight: verify gws OAuth token is valid before doing any work
-GWS_AUTH_FAILED_FILE="$BRIEFING_DIR/.gws_auth_failed"
-GWS_CHECK=$("$GWS" gmail users messages list --params '{"userId":"me","maxResults":1}' 2>&1)
-if echo "$GWS_CHECK" | grep -q "401\|invalid_grant\|Token has been expired\|token expired\|OAuth token\|authentication"; then
-    echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: gws auth check failed — token needs refresh." >> "$BRIEFING_DIR/scheduler.log"
-    touch "$GWS_AUTH_FAILED_FILE"
-    if [ -n "$SLACK_WEBHOOK" ]; then
-        curl -s -X POST "$SLACK_WEBHOOK" \
-            -H 'Content-type: application/json' \
-            -d "{\"text\": \":key: Briefings paused — gws OAuth token expired. Run \`gws auth login\` in your terminal to re-authenticate.\"}"
-    fi
-    exit 1
-fi
-
-# If we just recovered from an auth failure, notify Slack
-if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
-    rm -f "$GWS_AUTH_FAILED_FILE"
-    if [ -n "$SLACK_WEBHOOK" ]; then
-        curl -s -X POST "$SLACK_WEBHOOK" \
-            -H 'Content-type: application/json' \
-            -d "{\"text\": \":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully.\"}"
-    fi
-fi
-
-# Detect Claude Code updates and warn proactively about possible permission re-prompts.
 # After some Claude Code updates, --dangerously-skip-permissions can be re-prompted,
 # which the headless scheduler cannot answer. Flagging the version change up front means
 # the user knows what to do if briefings start failing silently afterwards.
-CLAUDE_VERSION_FILE="$BRIEFING_DIR/.claude_version"
 CURRENT_CLAUDE_VERSION=$("$CLAUDE" --version 2>/dev/null | head -1 || echo "unknown")
 LAST_CLAUDE_VERSION=$(cat "$CLAUDE_VERSION_FILE" 2>/dev/null || echo "")
 if [ -n "$LAST_CLAUDE_VERSION" ] && [ "$CURRENT_CLAUDE_VERSION" != "$LAST_CLAUDE_VERSION" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M')] Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION" >> "$BRIEFING_DIR/scheduler.log"
-    if [ -n "$SLACK_WEBHOOK" ]; then
-        curl -s -X POST "$SLACK_WEBHOOK" \
-            -H 'Content-type: application/json' \
-            -d "{\"text\": \":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). If briefings start failing, open a terminal and run \`claude\` once interactively to confirm any new permission prompts.\"}"
-    fi
+    log "Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION"
+    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). If briefings start failing, open a terminal and run \`claude\` once interactively to confirm any new permission prompts."
 fi
 echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
 
-# === Pre-flight gate: only invoke Claude if there's actual work ===
-# Asks gws Calendar directly: any meeting needing briefing? any ended meeting needing follow-up?
-# Plus: any *-awaiting-*.md files (transcript replies to check)?
-# Fails open: if calendar fetch fails, invoke Claude anyway so we never miss work.
+# === Pre-flight gate ===
+# One gws call surfaces both auth state and calendar contents. Fails open: if the
+# fetch fails for any non-auth reason, invoke Claude anyway so we never miss work.
 
-# Calendar window: -2 days to +2 hours (covers both briefing and follow-up windows)
 TIME_MIN=$(date -u -v-2d +%Y-%m-%dT%H:%M:%SZ)
 TIME_MAX=$(date -u -v+2H +%Y-%m-%dT%H:%M:%SZ)
 CAL_EVENTS=$("$GWS" calendar events list --params "{\"calendarId\":\"primary\",\"timeMin\":\"$TIME_MIN\",\"timeMax\":\"$TIME_MAX\",\"singleEvents\":true,\"orderBy\":\"startTime\"}" 2>&1)
+
+if echo "$CAL_EVENTS" | grep -q "401\|invalid_grant\|Token has been expired or revoked\|OAuth token has expired"; then
+    log "ERROR: gws auth check failed — token needs refresh."
+    touch "$GWS_AUTH_FAILED_FILE"
+    notify_slack ":key: Briefings paused — gws OAuth token expired. Run \`gws auth login\` in your terminal to re-authenticate."
+    exit 1
+fi
+
+if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
+    rm -f "$GWS_AUTH_FAILED_FILE"
+    notify_slack ":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully."
+fi
 
 NEED_BRIEFING=0
 NEED_FOLLOWUP=0
@@ -122,25 +111,19 @@ need_briefing = False
 need_followup = False
 
 for ev in events:
-    # Skip events I declined
     attendees = ev.get('attendees', []) or []
     me = next((a for a in attendees if a.get('self')), None)
     if me and me.get('responseStatus') == 'declined':
         continue
 
-    # Skip all-day events (no dateTime, only date)
-    start_field = ev.get('start', {})
-    end_field   = ev.get('end', {})
-    start_str = start_field.get('dateTime')
-    end_str   = end_field.get('dateTime')
+    start_str = ev.get('start', {}).get('dateTime')
+    end_str   = ev.get('end', {}).get('dateTime')
     if not start_str or not end_str:
         continue
 
-    # Skip working-location entries and similar non-meeting types
     if ev.get('eventType') in ('workingLocation', 'outOfOffice', 'focusTime'):
         continue
 
-    # Skip solo blocks (need 2+ attendees)
     if len(attendees) < 2:
         continue
 
@@ -150,9 +133,7 @@ for ev in events:
     except Exception:
         continue
 
-    # File slugs use local-time HHMM prefix
-    local_start = start_dt.astimezone()
-    prefix = local_start.strftime('%Y-%m-%d-%H%M')
+    prefix = start_dt.astimezone().strftime('%Y-%m-%d-%H%M')
 
     has_briefing = any(
         f.startswith(prefix + '-') and '-followup-' not in f and '-awaiting-' not in f
@@ -171,7 +152,7 @@ for ev in events:
     if minus2d <= end_dt < now and not has_followup_or_awaiting:
         need_followup = True
 
-# Awaiting files always need checking (transcript reply may have arrived)
+# An awaiting file means a transcript reply may have arrived
 if any('-awaiting-' in f and f.endswith('.md') for f in existing):
     need_followup = True
 
@@ -179,58 +160,43 @@ print(f"BRIEFING={1 if need_briefing else 0}")
 print(f"FOLLOWUP={1 if need_followup else 0}")
 PYEOF
 )
-    eval "$GATE_OUTPUT"
-    NEED_BRIEFING=$BRIEFING
-    NEED_FOLLOWUP=$FOLLOWUP
+    NEED_BRIEFING=$(echo "$GATE_OUTPUT" | grep '^BRIEFING=' | cut -d= -f2)
+    NEED_FOLLOWUP=$(echo "$GATE_OUTPUT" | grep '^FOLLOWUP=' | cut -d= -f2)
+    : "${NEED_BRIEFING:=0}"
+    : "${NEED_FOLLOWUP:=0}"
 else
-    # Calendar fetch failed — fail open so we don't silently miss work
-    echo "[$(date '+%Y-%m-%d %H:%M')] WARN: calendar fetch failed, invoking Claude as fallback." >> "$BRIEFING_DIR/scheduler.log"
+    # Calendar fetch failed for a non-auth reason — fail open so we don't silently miss work
+    log "WARN: calendar fetch failed, invoking Claude as fallback."
     NEED_BRIEFING=1
     NEED_FOLLOWUP=1
 fi
 
-# Belt-and-braces: any awaiting file at all forces follow-up (even if calendar parse missed it)
 if ls "$BRIEFING_DIR"/*-awaiting-*.md >/dev/null 2>&1; then
     NEED_FOLLOWUP=1
 fi
 
 if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M')] Pre-flight: nothing to do, skipped Claude." >> "$BRIEFING_DIR/scheduler.log"
+    log "Pre-flight: nothing to do, skipped Claude."
     exit 0
 fi
-
-# === Invoke Claude only for the work that's actually needed ===
-# When both are needed, run a single combined call (saves ~50% of Claude invocations
-# during busy mornings). When only one is needed, single-purpose call.
 
 run_claude() {
     local label="$1"
     local prompt="$2"
-    echo "[$(date '+%Y-%m-%d %H:%M')] Running: $label" >> "$BRIEFING_DIR/scheduler.log"
-    local output
+    log "Running: $label"
+    local output rc
     output=$("$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    rc=$?
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
-        echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: $label auth failure." >> "$BRIEFING_DIR/scheduler.log"
-        if [ -n "$SLACK_WEBHOOK" ]; then
-            curl -s -X POST "$SLACK_WEBHOOK" \
-                -H 'Content-type: application/json' \
-                -d "{\"text\": \":key: Briefings paused — OAuth token expired. Run: claude /briefing to refresh.\"}"
-        fi
+        log "ERROR: $label auth failure."
+        notify_slack ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
     elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
-        echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give." >> "$BRIEFING_DIR/scheduler.log"
-        if [ -n "$SLACK_WEBHOOK" ]; then
-            curl -s -X POST "$SLACK_WEBHOOK" \
-                -H 'Content-type: application/json' \
-                -d "{\"text\": \":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle.\"}"
-        fi
-    elif ! echo "$output" | grep -q "."; then
-        echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: $label exited with failure." >> "$BRIEFING_DIR/scheduler.log"
-        if [ -n "$SLACK_WEBHOOK" ]; then
-            curl -s -X POST "$SLACK_WEBHOOK" \
-                -H 'Content-type: application/json' \
-                -d "{\"text\": \":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage.\"}"
-        fi
+        log "ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give."
+        notify_slack ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
+    elif [ "$rc" -ne 0 ]; then
+        log "ERROR: $label exited with non-zero status ($rc)."
+        notify_slack ":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage."
     fi
 }
 
@@ -242,4 +208,4 @@ elif [ "$NEED_FOLLOWUP" = "1" ]; then
     run_claude "follow-up" "Run /follow-up all"
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M')] Done." >> "$BRIEFING_DIR/scheduler.log"
+log "Done."

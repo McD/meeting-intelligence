@@ -76,15 +76,14 @@ fi
 # ── Step 3: Claude Code ──────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}Step 3: Claude Code${NC}"
-CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 if command -v claude &>/dev/null || [ -f "$HOME/.local/bin/claude" ]; then
     ok "Claude Code already installed."
 else
     info "Installing Claude Code..."
     npm install -g @anthropic-ai/claude-code
-    CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
     ok "Claude Code installed."
 fi
+CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 
 echo ""
 echo "Claude Code needs you to sign in (Claude Max recommended)."

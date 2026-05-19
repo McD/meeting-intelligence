@@ -33,15 +33,9 @@ bash install.sh
 
 The installer asks for two things: the email address briefings should be sent to, and your company's email domain (used to classify meetings as internal vs external). Both are saved to `~/.briefings_config`. The slash commands read this config at runtime, so updating either value is just a matter of editing the file (no re-install needed).
 
-### Alternative: install as a Claude Code plugin
+### Plugin format
 
-The repo is also a valid Claude Code plugin. If you'd rather skip the `cp` step that `install.sh` does for the slash commands, you can install them via the plugin system instead:
-
-```
-/plugin install mcd/meeting-intelligence
-```
-
-You still need to run `install.sh` once to set up Homebrew, Node.js, gws, the scheduler, and the launchd job. Pass `--skip-commands` to stop it copying the slash commands when you're installing them via the plugin instead. (Not implemented yet; for now, accept the duplicate copy or comment out Step 8 in `install.sh`.)
+The repo is structured as a Claude Code plugin (manifest at `.claude-plugin/plugin.json`). For now, `install.sh` is the supported install path — it sets up the prerequisites, scheduler, and launchd job that the plugin manifest does not cover. A `/plugin install` flow may be wired up later once there's a clean way to skip the scheduler-setup steps from inside a plugin install.
 
 ## Update
 
