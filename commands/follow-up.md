@@ -3,15 +3,16 @@
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
-**Before doing anything else**, read the delivery email address:
+**Before doing anything else**, read the delivery email address and company domain:
 ```bash
 MY_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
-if [ -z "$MY_EMAIL" ]; then
-    echo "Error: MY_EMAIL not configured. Run the meeting-intelligence installer, or add MY_EMAIL=you@example.com to ~/.briefings_config" >&2
+COMPANY_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+if [ -z "$MY_EMAIL" ] || [ -z "$COMPANY_DOMAIN" ]; then
+    echo "Error: ~/.briefings_config missing MY_EMAIL or COMPANY_DOMAIN. Run the meeting-intelligence installer." >&2
     exit 1
 fi
 ```
-Use `$MY_EMAIL` for all email delivery throughout this command.
+Use `$MY_EMAIL` for all email delivery throughout this command. `$COMPANY_DOMAIN` is used in Step 4 to classify the meeting as internal vs external/mixed for the high-stakes filter.
 
 ## Rules
 - **Never use osascript, AppleScript, or Apple Mail.app** — use `gws` tools only for email and calendar access
@@ -193,7 +194,87 @@ If the transcript is long, focus on the last 20% (actions cluster at the end) bu
 
 ---
 
-## Step 4: Assemble the follow-up
+## Step 4: Classify items and append to the decision ledger
+
+Each extracted item becomes one entry in the append-only ledger at `~/.briefings/decisions.jsonl` (managed by the `briefings_mcp` package — installed by `install.sh`, see `briefings_mcp/schema.py` for the schema and `briefings_mcp/ledger.py` for the writer).
+
+**Classification:**
+- **Key decisions** → ledger `type: "decision"` with `resolved: true` (the meeting reached a resolution).
+- **Action items** → ledger `type: "commitment"` with `state: "open"`, `owner: <person>`, and `due: <ISO date or null>`.
+- **Open questions** are *not* appended in v1 — they remain in the follow-up doc only.
+
+For each item, infer **1–3 short topic tags** (e.g. `"pricing"`, `"q3-plan"`, `"renewal"`) from its content. Topics are fuzzy-matched by substring in the MCP server, so consistency is helpful but not strict.
+
+**High-stakes flag** (per R12) is computed once for the meeting and applied to every entry from it:
+
+1. **Verdict** — look in `~/Briefings/` for a prior briefing file whose name starts with the same `YYYY-MM-DD-HHmm-` prefix as this follow-up and does **not** contain `-followup-` or `-awaiting-`. If found, scan its first heading line for a word from this closed set: `DECIDE-TODAY`, `DELEGATE`, `DEFER`, `DECLINE`, `PREP-HARD`, `LOW-STAKES`, `MOVE-ASYNC`. If no briefing exists or no verdict word is present, default to `LOW-STAKES`.
+2. **is_external** — `true` if any attendee has an email outside `$COMPANY_DOMAIN`; `false` otherwise.
+3. **attendee_history_count** — the maximum count of prior ledger entries for any of this meeting's attendees (computed inline below).
+
+Build the items list and append in one Python invocation. The heredoc pattern mirrors `scripts/scheduler.sh` line 81:
+
+```bash
+APPEND_OUT=$(MEETING_VERDICT="<verdict word or LOW-STAKES>" \
+             IS_EXTERNAL="<true|false>" \
+             SOURCE_MEETING="YYYY-MM-DD-HHmm-slug" \
+             ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
+             ITEMS_JSON='[
+               {"type":"commitment","summary":"Send pricing memo to Acme","topics":["pricing","acme"],"owner":"You","due":"2026-05-26","state":"open"},
+               {"type":"decision","summary":"Defer Q3 region rollout until staffing lands","topics":["q3-plan","staffing"],"resolved":true}
+             ]' \
+             python3 <<'PYEOF'
+import os, json, sys, uuid
+from collections import Counter
+from datetime import datetime, timezone
+from briefings_mcp import ledger, schema
+
+verdict        = os.environ.get("MEETING_VERDICT", "LOW-STAKES")
+is_external    = os.environ.get("IS_EXTERNAL", "false").lower() == "true"
+source_meeting = os.environ["SOURCE_MEETING"]
+attendees      = json.loads(os.environ["ATTENDEES_JSON"])
+items          = json.loads(os.environ["ITEMS_JSON"])
+
+# attendee_history_count: max prior ledger entries for any current attendee
+counter = Counter()
+for entry in ledger.iter_entries():
+    for a in entry.get("attendees", []):
+        if a in attendees:
+            counter[a] += 1
+max_count = max(counter.values(), default=0)
+
+high_stakes = schema.is_high_stakes(verdict, is_external, max_count)
+
+now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+results = []
+for item in items:
+    item.setdefault("id", str(uuid.uuid4()))
+    item.setdefault("created_at", now_iso)
+    item.setdefault("attendees", attendees)
+    item.setdefault("source_meeting", source_meeting)
+    item.setdefault("topics", [])
+    item.setdefault("why", "")
+    item.setdefault("why_notes", "")
+    try:
+        ledger.append(item)
+        results.append({"ok": True, "id": item["id"], "summary": item["summary"]})
+    except Exception as exc:
+        print(f"WARN: ledger.append failed for {item.get('summary','?')[:60]!r}: {exc}", file=sys.stderr)
+        results.append({"ok": False, "summary": item.get("summary", ""), "error": str(exc)})
+
+print(json.dumps({"high_stakes": high_stakes, "results": results}))
+PYEOF
+)
+```
+
+Parse `$APPEND_OUT` as JSON:
+- `high_stakes` (bool) gates the why-prompt section in Step 5 and the awaiting-why state file in Step 6.
+- `results` (array) is ordered the same as `ITEMS_JSON`. Entries with `ok: true` are the ones that will be numbered `1..N` in the why-prompt section (in array order). Entries with `ok: false` are skipped from the prompts and from `pending_entry_ids` — the follow-up is still delivered (R-level: better to ship a degraded follow-up than skip it entirely).
+
+**If no items were extracted** (`ITEMS_JSON='[]'`), the append step is a no-op: `high_stakes` falls back to the meeting-level flag but `results` is empty, so no Why? section and no awaiting-why file will be produced downstream.
+
+---
+
+## Step 5: Assemble the follow-up
 
 Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the file so it is readable only by the user (follow-ups contain meeting transcripts, attendee actions, and decisions — keep them off other accounts on the machine):
 
@@ -218,13 +299,26 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 
 Skip any section that has no content.
 
+**Why? section (high-stakes follow-ups only):** If Step 4 returned `high_stakes: true` *and* at least one entry has `ok: true`, append a final `## Why?` section to the file. Number the entries `1..N` over the successfully-appended entries only (in `results` order — so gaps from failed appends are renumbered away, not left as missing). Use this exact shape:
+
+```markdown
+## Why?
+1: Why? [first successfully-appended entry's summary, ≤80 chars]
+2: Why? [second successfully-appended entry's summary]
+3: Why? [third successfully-appended entry's summary]
+
+Reply to this thread with one line per entry: `N: <reason>`. Skip any you don't want to capture.
+```
+
+If the meeting is low-stakes, no items were extracted, or every append failed, omit the `## Why?` section entirely.
+
 ---
 
-## Step 5: Deliver
+## Step 6: Deliver
 
-Send via both channels:
+Send via both channels. Email is sent first because its `threadId` is needed for the awaiting-why state file.
 
-**Email** — to $MY_EMAIL using `--html`, subject: `Follow-up: [Meeting title] ([date])`
+**Email** — to $MY_EMAIL using `--html`, subject: `Follow-up: [Meeting title] ([date])`. Capture the JSON response so the `threadId` is available below.
 
 Convert markdown to HTML using this exact Python snippet (save the follow-up file first, then run):
 
@@ -266,10 +360,11 @@ if in_list: out.append('</ul>')
 print('\n'.join(out))
 PYEOF
 )
-gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html
+SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
+THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
 
-Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file.
+Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. `$THREAD_ID` is used in the awaiting-why step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
 
 **Slack** — if `~/.slack_webhook` exists, convert to mrkdwn and POST:
 
@@ -297,9 +392,28 @@ fi
 
 Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. If `~/.slack_webhook` is not found, skip silently.
 
+**Awaiting-why state file (high-stakes follow-ups only).** When Step 4 returned `high_stakes: true` *and* at least one entry has `ok: true`, record the pending state so the scheduler (U3) can match a reply back to the ledger entries. Mirror the awaiting-transcript file shape from Step 2:
+
+```bash
+umask 077
+AWAITING_WHY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-why-slug.md
+cat >"$AWAITING_WHY" <<EOF
+thread_id: $THREAD_ID
+meeting: [Meeting Name]
+slug: YYYY-MM-DD-HHmm-slug
+pending_entry_ids: ["<id of entry 1 from results>","<id of entry 2 from results>","<id of entry 3 from results>"]
+created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+chmod 600 "$AWAITING_WHY"
+```
+
+The `pending_entry_ids` array lists the successfully-appended entry UUIDs from Step 4's `results`, in the **same order** they appear under `## Why?` in the follow-up file — so the reply line `N: <reason>` indexes into the array at position `N-1`.
+
+Skip awaiting-why file creation entirely when the meeting is low-stakes, when no items were extracted, when every append failed, or when `$THREAD_ID` is empty (in that last case, log `"WARN: follow-up sent but threadId not captured — awaiting-why state skipped for [meeting]"` to `~/Briefings/scheduler.log` so the gap is visible).
+
 ---
 
-## Step 6: Confirm
+## Step 7: Confirm
 
 Tell the user:
 - Which meeting was processed
