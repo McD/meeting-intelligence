@@ -1,5 +1,5 @@
 # Pre-meeting briefing
-<!-- version: 2026-04-13 -->
+<!-- version: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
 
 Generate a briefing document for upcoming meetings (internal and external), pulling context from Gmail, Drive, and Slack.
 
@@ -19,12 +19,14 @@ Check `$ARGUMENTS` first:
 ```bash
 MY_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
 COMPANY_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+LOOKBACK_DAYS=$(grep '^LOOKBACK_DAYS=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+LOOKBACK_DAYS=${LOOKBACK_DAYS:-60}
 if [ -z "$MY_EMAIL" ] || [ -z "$COMPANY_DOMAIN" ]; then
     echo "Error: ~/.briefings_config missing MY_EMAIL or COMPANY_DOMAIN. Run the meeting-intelligence installer." >&2
     exit 1
 fi
 ```
-Use `$MY_EMAIL` for all email delivery throughout this command. `$COMPANY_DOMAIN` is your company's internal email domain, used for internal/external classification below.
+Use `$MY_EMAIL` for all email delivery throughout this command. `$COMPANY_DOMAIN` is your company's internal email domain, used for internal/external classification below. `$LOOKBACK_DAYS` is the window (in days) for the `Delta:` section's ledger lookup in Step 4; default 60.
 
 ### Step 1: Find the target meeting(s)
 
@@ -108,11 +110,76 @@ If an attendee has no email history, no shared docs, and no past calls, just lis
 
 Skip Gmail for internal attendees. If an internal attendee has no Slack history, no transcripts, and no shared docs relevant to the meeting, just list their name. Don't create empty sections.
 
-### Step 4: Find relevant documents
+### Step 4: Find relevant documents and prior touchpoints
 
 **Linked docs:** If the calendar description contains URLs to Google Docs, Sheets, or Slides, fetch each one and write a 2-3 sentence summary of its content and current state.
 
 **Related docs:** Search Drive for documents modified in the last 14 days whose titles or content relate to the meeting topic. Use keywords from the event title and description. List up to 5, with title, last modified date, and a one-line description.
+
+**Prior touchpoints (Delta):** Read the decision ledger at `~/.briefings/decisions.jsonl` to find recent prior entries (decisions or commitments) that overlap with this meeting's attendees. These become the `Delta:` section in Step 5.
+
+Before invoking the heredoc, infer 1–3 short topic tags from the meeting title, calendar description, and any linked-doc themes (e.g. `"pricing"`, `"q3-plan"`, `"renewal"`). These are used to rank ledger matches; they don't need to be exact, just consistent with the topic-tagging style used by `/follow-up`.
+
+Mirror the embedded-Python pattern from `scripts/scheduler.sh` line 81 and `commands/follow-up.md` Step 4:
+
+```bash
+DELTA_OUT=$(LOOKBACK_DAYS="$LOOKBACK_DAYS" \
+            ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
+            TOPICS_JSON='["pricing","renewal"]' \
+            python3 <<'PYEOF'
+import os, json, sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+lookback_days = int(os.environ.get("LOOKBACK_DAYS", "60"))
+attendees     = set(json.loads(os.environ["ATTENDEES_JSON"]))
+topics        = set(json.loads(os.environ["TOPICS_JSON"]))
+
+ledger_path = Path.home() / ".briefings" / "decisions.jsonl"
+if not ledger_path.exists():
+    print(json.dumps([]))
+    sys.exit(0)
+
+cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+def parse_ts(s):
+    if s.endswith('Z'):
+        s = s[:-1] + '+00:00'
+    return datetime.fromisoformat(s)
+
+matches = []
+with ledger_path.open() as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        entry_attendees = set(entry.get("attendees", []))
+        if not (entry_attendees & attendees):
+            continue
+        try:
+            created = parse_ts(entry.get("created_at", ""))
+        except Exception:
+            continue
+        if created < cutoff:
+            continue
+        topic_overlap = len(set(entry.get("topics", [])) & topics)
+        matches.append((topic_overlap, created.isoformat(), entry))
+
+# Rank: topic-overlap-count desc, then created_at desc. Surface up to 2.
+matches.sort(key=lambda m: (m[0], m[1]), reverse=True)
+print(json.dumps([m[2] for m in matches[:2]]))
+PYEOF
+)
+```
+
+Parse `$DELTA_OUT` as a JSON array. Use the results to compose the `Delta:` section in Step 5:
+
+- **Empty array** (no overlap, or ledger missing/empty): render the literal text `No prior touchpoints with these attendees.`
+- **Non-empty:** render up to 2 entries. For each, surface the `summary`, the `type` (`decision` or `commitment`), the `created_at` date, and any state-bearing fields (`state` for commitments, `resolved` for decisions). The `Delta:` line should reference the prior touchpoint specifically — e.g. "Pricing memo committed Apr 30, still open (state: open)" — not describe the meeting from scratch.
 
 ### Step 5: Assemble the briefing
 
@@ -120,21 +187,92 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-meeting-slug.md` where the slug is the meet
 
 **After writing the file, set its mode to 600 so it is readable only by the user**: `chmod 600 ~/Briefings/YYYY-MM-DD-HHmm-meeting-slug.md`. Briefings contain attendee emails, email-thread summaries, and prep notes — keep them off other accounts on the machine.
 
-**Prep notes** — always generate this section last, after all research is done. Write 3–5 bullet points that synthesise the most actionable advice based on everything gathered:
+The briefing opens with a **SITREP block** (verdict + Trap + Delta + Comment, plus Counterparty for external/mixed meetings). The existing attendee/document/transcript context follows below as a `## Detail` body. The SITREP block is what scans in 30 seconds; Detail is for the curious moment.
+
+#### Verdict
+
+The brief's first heading line is the meeting title prefixed with a single-word verdict in caps from this closed set (single source of truth: `VERDICTS` frozenset in `briefings_mcp/schema.py`):
+
+- `DECIDE-TODAY` — a real decision must be made in this meeting
+- `DELEGATE` — should be handled by someone else; your job is to hand it off
+- `DEFER` — push to a later forum or block more prep first
+- `DECLINE` — should not happen; consider cancelling or sending regrets
+- `PREP-HARD` — high-stakes; prepare aggressively before walking in
+- `LOW-STAKES` — routine; minimal prep, light touch
+- `MOVE-ASYNC` — convert to async (doc, email, Slack thread)
+
+Pick exactly one verdict from this set. Choose based on:
+- **Agenda signals** in the meeting title and description (a decision deadline, a status update, a brainstorm)
+- **Attendee history** from the Delta touchpoints (open commitments coming due, prior unresolved threads, external counterparty stakes)
+- **Stakes** (external/mixed vs internal; senior attendees vs peers; high-volume prior ledger history vs first interaction)
+
+When signals are thin or ambiguous, default to `LOW-STAKES`. Do not invent a verdict to fit the meeting shape; the closed set is the closed set.
+
+The first line of the file must be exactly:
+
+```
+# <VERDICT> — <Meeting title>
+```
+
+This format is non-negotiable. `commands/follow-up.md` Step 4 scans this first heading line for a verdict word to compute the high-stakes filter; the verdict word must come from the closed set above.
+
+#### SITREP sections
+
+Below the verdict heading and the metadata line, render the SITREP block:
+
+- **`Trap:`** — the one risk most likely to derail the meeting. One sentence. The failure mode the user should walk in already aware of.
+- **`Delta:`** — what has changed since the last touchpoint with overlapping attendees, sourced from Step 4's `$DELTA_OUT`. Render up to 2 prior entries, each on its own line. If `$DELTA_OUT` was empty, render the literal text: `No prior touchpoints with these attendees.`
+- **`Comment:`** — system interpretation, one or two sentences. Explicitly the brief's *take* on this meeting, separated from the reporting underneath. This is where you say what the meeting *means* given the context.
+
+For **external or mixed meetings only**, append:
+
+- **`Counterparty:`** — a short read on the other party's likely position, priorities, and incentives going into this meeting.
+  - **Thin-data trigger:** if every external attendee has fewer than 3 Gmail threads *and* zero prior transcripts mentioning them, the Counterparty section must open with this literal text verbatim, no edits:
+    ```
+    Limited counterparty signal — first known interaction; role assumptions only
+    ```
+    Followed by role-based assumptions only (what someone in their role typically cares about). Do not invent specific detail — no fabricated history, no invented stakes, no guessed priorities beyond what their role implies.
+  - **When data is sufficient** (≥3 Gmail threads OR ≥1 prior transcript): write a substantive read on counterparty position based on the actual research from Step 3.
+
+For **internal-only meetings** (every attendee on `@$COMPANY_DOMAIN`), omit the `Counterparty:` section entirely — do not render an empty section, do not render a "not applicable" stub.
+
+#### Detail body
+
+Below the SITREP block, render the detail body — the attendee/document/transcript research from Steps 2–4 as a sequence of `##`-level sections (Attendees, Agenda, Linked documents, Related documents, Prep notes). The SITREP block sits on top; the detail body is the scannable "if you want more" context underneath. Skip any sub-section that has no content.
+
+**Prep notes** still go at the end of the Detail body. Write 3–5 bullet points that synthesise the most actionable advice based on everything gathered:
 - What to lead with or raise first
 - Any open threads or commitments from previous calls to address
 - Anything sensitive to navigate carefully (relationship dynamics, pending decisions, unresolved tension)
 - One or two good questions to ask
 - What success looks like for this meeting
 
-This should read like advice from someone who's read all the email and knows the context — not a recap of what's already in the briefing.
+Prep notes should read like advice from someone who's read all the email and knows the context — not a recap of what's already in the briefing.
 
-Use this structure (skip any section that has no content):
+#### Templates
+
+Use this structure (skip any Detail sub-section that has no content):
 
 **For external or mixed meetings:**
 ```markdown
-# [Meeting title]
+# <VERDICT> — [Meeting title]
 **[Day, Date] | [Start time] - [End time] ([duration]) | [Location/link]**
+
+## SITREP
+
+**Trap:** [one-sentence risk]
+
+**Delta:**
+- [Prior touchpoint #1: summary, type, date, state]
+- [Prior touchpoint #2: summary, type, date, state]
+
+(or, when $DELTA_OUT is empty:)
+
+**Delta:** No prior touchpoints with these attendees.
+
+**Comment:** [one or two sentences of system interpretation]
+
+**Counterparty:** [substantive read, OR the literal thin-data label followed by role-based assumptions]
 
 ## Attendees
 
@@ -170,8 +308,22 @@ Use this structure (skip any section that has no content):
 
 **For internal-only meetings:**
 ```markdown
-# [Meeting title]
+# <VERDICT> — [Meeting title]
 **[Day, Date] | [Start time] - [End time] ([duration]) | [Location/link]**
+
+## SITREP
+
+**Trap:** [one-sentence risk]
+
+**Delta:**
+- [Prior touchpoint #1: summary, type, date, state]
+- [Prior touchpoint #2: summary, type, date, state]
+
+(or, when $DELTA_OUT is empty:)
+
+**Delta:** No prior touchpoints with these attendees.
+
+**Comment:** [one or two sentences of system interpretation]
 
 ## Attendees
 
@@ -200,6 +352,10 @@ Use this structure (skip any section that has no content):
 ### Step 6: Quality check
 
 Before saving, verify:
+- The first heading line is exactly `# <VERDICT> — <Meeting title>` and the verdict word is one of `DECIDE-TODAY`, `DELEGATE`, `DEFER`, `DECLINE`, `PREP-HARD`, `LOW-STAKES`, `MOVE-ASYNC`. No free-form verdicts. (`commands/follow-up.md` Step 4 reads this line to compute the high-stakes filter.)
+- The SITREP block contains `Trap:`, `Delta:`, and `Comment:` in that order. For external/mixed meetings, `Counterparty:` follows. For internal-only meetings, `Counterparty:` is absent.
+- `Delta:` either lists up to 2 prior touchpoints from the ledger, or renders the literal text `No prior touchpoints with these attendees.` Never blank, never invented from non-ledger sources.
+- When the Counterparty section uses the thin-data label, the text is exactly `Limited counterparty signal — first known interaction; role assumptions only` and what follows is role-based assumptions only — no fabricated history.
 - The briefing is scannable in under 2 minutes
 - No empty sections remain (remove them)
 - Email thread summaries are genuinely useful (status-oriented, not just "you emailed about X")
