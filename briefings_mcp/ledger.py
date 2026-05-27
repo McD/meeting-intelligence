@@ -11,6 +11,11 @@ mutates a commitment entry's `state` so the actions tracker digest's reply-keywo
 (`done:`, `drop:`) can persist. All other fields remain append-only. The atomic-rewrite shape
 (tmp file + os.replace) is safe under the single-writer guarantee; supersede-event alternatives
 push reconciliation into every reader for negligible gain.
+
+Phase 4 adds a dedup-on-write guard in `append`: commitment entries whose `source_meeting` +
+`summary` (exact or first-60-char-prefix) already match a recent entry are silent-skipped.
+Prevents /follow-up --force re-runs from accumulating duplicate copies of the same action item.
+The companion `scripts/dedup_ledger.py` cleans up duplicates already on disk.
 """
 
 from __future__ import annotations
@@ -54,13 +59,75 @@ def _ensure_paths() -> None:
     os.chmod(LEDGER_PATH, _FILE_MODE)
 
 
+_DEDUP_SCAN_LIMIT = 50  # Last-N entries scanned by dedup-on-write (Phase 4).
+_DEDUP_PREFIX_LEN = 60  # Prefix length for near-duplicate summary matching.
+
+
+def _is_duplicate_commitment(entry: dict) -> bool:
+    """Phase 4 dedup-on-write: scan the last few ledger entries for a near-duplicate.
+
+    A commitment is a near-duplicate when an existing entry shares its `source_meeting`,
+    has `type == "commitment"`, and matches the summary exactly OR on the first 60 chars.
+    Decisions are never deduped here; the first commitment for a meeting is never a duplicate.
+
+    Fails open: any error reading the ledger returns False so the append proceeds. Better to
+    write a possible duplicate than to silently drop data.
+    """
+    if entry.get("type") != "commitment":
+        return False
+    source_meeting = entry.get("source_meeting")
+    summary = entry.get("summary") or ""
+    if not source_meeting or not summary:
+        return False
+    if not LEDGER_PATH.exists():
+        return False
+
+    new_prefix = summary[:_DEDUP_PREFIX_LEN]
+    try:
+        # Tail the last N lines — cheap on a small ledger, bounded on a growing one.
+        with open(LEDGER_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for raw in reversed(lines[-_DEDUP_SCAN_LIMIT:]):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            existing = json.loads(stripped)
+            if existing.get("type") != "commitment":
+                continue
+            if existing.get("source_meeting") != source_meeting:
+                continue
+            existing_summary = existing.get("summary") or ""
+            if existing_summary == summary:
+                return True
+            # Prefix-of-prefix match: catches Claude rephrasings where one summary
+            # is a substring extension of another (e.g. "Send memo" vs "Send memo by Friday").
+            # Both prefixes truncated at 60 chars; one starting-with the other is enough.
+            existing_prefix = existing_summary[:_DEDUP_PREFIX_LEN]
+            if existing_prefix and new_prefix and (
+                existing_prefix.startswith(new_prefix)
+                or new_prefix.startswith(existing_prefix)
+            ):
+                return True
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    return False
+
+
 def append(entry: dict) -> None:
     """Validate entry against schema, then write one JSON line and fsync.
 
     Raises schema.SchemaError before any write happens on invalid input — the ledger remains
     untouched. v1 is single-writer (commands/follow-up.md), so no file locking.
+
+    Phase 4: if `entry` is a commitment that already exists for the same source_meeting (by
+    exact or 60-char-prefix summary match against the last 50 entries), the write is a
+    silent no-op. The caller doesn't need to know; the digest stops showing duplicate
+    actions on /follow-up --force re-runs.
     """
     schema.validate(entry)
+    if _is_duplicate_commitment(entry):
+        return
     _ensure_paths()
     line = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
     with open(LEDGER_PATH, "a", encoding="utf-8") as f:

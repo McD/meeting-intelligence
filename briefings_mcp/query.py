@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
+from datetime import date, timedelta
 from typing import Optional
 
 from . import index as index_module
+from . import ledger as ledger_module
 
 _MAX_LIMIT = 500
 
@@ -106,3 +108,73 @@ def list_attendees(limit: Optional[int] = 100) -> list[dict]:
         {"attendee": attendee, "entry_count": count}
         for attendee, count in counter.most_common(capped)
     ]
+
+
+def find_patterns(
+    window_days: int = 60,
+    min_count: int = 3,
+    limit: int = 3,
+    attendees: Optional[list[str]] = None,
+    topic_filter: Optional[list[str]] = None,
+    types: Optional[list[str]] = None,
+) -> list[tuple[str, int]]:
+    """Return recurring topic tags from the ledger within a date window.
+
+    Used by /briefing, /follow-up, and /digest (Phase 4) to surface cross-meeting echoes.
+    Streams entries via `ledger.iter_entries(since=...)` and counts topic-tag occurrences
+    (case-insensitive). Returns `(topic, count)` tuples sorted by count desc, then topic
+    asc for deterministic tie-breaking. Empty list when no topic clears `min_count`.
+
+    Filters:
+    - `attendees` — only count entries whose attendees intersect with this list
+      (case-insensitive). Used by /briefing to scope patterns to the current meeting's
+      attendees.
+    - `topic_filter` — only count entries whose topic tags include at least one of these
+      (case-insensitive substring match against any tag). Used by /follow-up to scope
+      patterns to this meeting's topics.
+    - `types` — restrict to specific entry types (e.g. ["commitment"]); defaults to both
+      commitments and decisions.
+
+    Returns at most `limit` tuples. `window_days=0` returns an empty list (the window
+    excludes everything).
+    """
+    if window_days <= 0 or min_count < 1 or limit < 1:
+        return []
+
+    since = date.today() - timedelta(days=window_days)
+
+    attendees_lc = {a.lower() for a in (attendees or [])}
+    topic_filter_lc = {t.lower() for t in (topic_filter or [])}
+    types_set = set(types) if types else {"commitment", "decision"}
+
+    counter: Counter[str] = Counter()
+    for entry in ledger_module.iter_entries(since=since):
+        if entry.get("type") not in types_set:
+            continue
+
+        if attendees_lc:
+            entry_attendees = {a.lower() for a in (entry.get("attendees") or [])}
+            if not (entry_attendees & attendees_lc):
+                continue
+
+        entry_topics = [t for t in (entry.get("topics") or []) if t]
+        if not entry_topics:
+            continue
+
+        if topic_filter_lc:
+            entry_topics_lc = {t.lower() for t in entry_topics}
+            if not any(
+                any(want in have for have in entry_topics_lc)
+                for want in topic_filter_lc
+            ):
+                continue
+
+        for tag in entry_topics:
+            counter[tag.lower()] += 1
+
+    # Counter.most_common is count-desc; explicit sort gives deterministic tie-break.
+    above_threshold = [
+        (topic, count) for topic, count in counter.items() if count >= min_count
+    ]
+    above_threshold.sort(key=lambda pair: (-pair[1], pair[0]))
+    return above_threshold[:limit]

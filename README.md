@@ -118,6 +118,7 @@ meeting-intelligence/
 ├── briefings_mcp/          # Local MCP server + ledger module (Python)
 ├── scripts/
 │   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
+│   ├── dedup_ledger.py     # One-time ledger cleanup (Phase 4; dry-run by default)
 │   └── verify-v1.sh        # End-to-end smoke test
 └── README.md
 ```
@@ -204,6 +205,34 @@ A local read-only MCP server (`briefings_mcp`) exposes the ledger to anything el
 The server runs from a dedicated Python venv at `~/.briefings/venv` and is registered automatically by `install.sh` via `claude mcp add briefings --scope user`. Confirm with `claude mcp list | grep briefings`.
 
 The briefing itself reads the ledger inline (no MCP roundtrip on the hot path); the MCP server is purely the read path for external agents.
+
+### Pattern flags
+
+Phase 4 added cross-meeting pattern detection. The function `briefings_mcp.query.find_patterns` scans the ledger for recurring topic tags within the last 60 days and surfaces the top three. Patterns appear in three places:
+
+- **In `/briefing`**, as a `Patterns:` line in the SITREP block (after `Counterparty:`). Filtered by this meeting's attendees, so the patterns shown are the ones this person keeps raising in your meetings.
+- **In `/follow-up`**, as a `## Pattern flags` section between `## Counterparty read` and `## Source`. Filtered by this meeting's topic tags — i.e. the recurring themes this meeting reinforced.
+- **In `/digest`**, as a one-line italic period themes summary at the top. Global view: the period's top recurring tags across all your meetings.
+
+A "pattern" is a topic tag appearing in three or more ledger entries within the 60-day window. The cap is three patterns per surface, sorted by frequency. When no topic clears the threshold, the line or section is omitted.
+
+Topic tags come from `/follow-up`'s Step 4 (Claude infers 1-3 tags per commitment or decision). The detection is exact-match, case-insensitive — if you want pattern flags to be sharper, the lever is the tagging step, not the detection step.
+
+### Ledger dedup
+
+`/follow-up --force` re-extractions used to accumulate near-identical commitment entries in the ledger (3+ copies of the same Robert action surfaced during Phase 3 testing). Phase 4 fixed this at two layers:
+
+- **Dedup-on-write** in `briefings_mcp.ledger.append`: when a new commitment is appended, the last 50 entries are scanned for the same `source_meeting` with an exact or 60-character-prefix match on `summary`. If a match exists, the write is a silent no-op.
+- **One-time cleanup script** at `scripts/dedup_ledger.py`: scans the entire ledger for duplicate commitment clusters within the same source_meeting and reports them. Dry-run by default. Run with `--apply` to actually rewrite the ledger (atomically, via tmp file + os.replace).
+
+```bash
+python3 scripts/dedup_ledger.py           # dry-run: report clusters, change nothing
+python3 scripts/dedup_ledger.py --apply   # rewrite the ledger, keeping the survivor per cluster
+```
+
+The survivor per cluster is picked by state rank first (`done` > `dropped` > `in-flight` > `open`) and earliest `created_at` as the tiebreak. The dry-run prints the survivor and the entries to be removed so you can review before committing.
+
+Decisions are never deduped — only commitments. The schema is unchanged.
 
 ## Actions tracker
 

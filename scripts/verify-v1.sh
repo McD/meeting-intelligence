@@ -289,13 +289,27 @@ else
     fail "smoke_test_u3p3.py" "no Python venv available"
 fi
 
-# ── 8. Manual half: generate a real briefing and assert SITREP shape ────────
+# ── 8. U4p4 smoke test (find_patterns + dedup) ──────────────────────────────
+section "8. U4p4 smoke test (find_patterns + dedup)"
+
+if [ -n "$TEST_PY" ]; then
+    if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_u4p4.py" >/tmp/u4p4_smoke.out 2>&1; then
+        pass "smoke_test_u4p4.py — all assertions pass"
+    else
+        fail "smoke_test_u4p4.py" "see /tmp/u4p4_smoke.out"
+        tail -20 /tmp/u4p4_smoke.out | sed 's/^/      /'
+    fi
+else
+    fail "smoke_test_u4p4.py" "no Python venv available"
+fi
+
+# ── 9. Manual half: generate a real briefing and assert SITREP shape ────────
 # Gated by --with-briefing because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes) and a calendar with an upcoming meeting in the
 # next 2 hours. The automated half above can't cover this because briefings
 # are Claude-generated.
 if [ "$WITH_BRIEFING" -eq 1 ]; then
-    section "8. Manual: regenerate next briefing and assert SITREP shape"
+    section "9. Manual: regenerate next briefing and assert SITREP shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /briefing"
@@ -380,17 +394,17 @@ if [ "$WITH_BRIEFING" -eq 1 ]; then
         fi
     fi
 else
-    section "8. Manual briefing test (skipped)"
+    section "9. Manual briefing test (skipped)"
     info "Re-run with --with-briefing to regenerate the next briefing and assert SITREP shape."
 fi
 
-# ── 9. Manual half: regenerate latest follow-up and assert Phase 1 shape ────
+# ── 10. Manual half: regenerate latest follow-up and assert Phase 1 shape ───
 # Gated by --with-followup because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes). Mirrors --with-briefing pattern: pick the most
 # recent follow-up, force-regenerate the same meeting, then grep the output
 # for mandatory and conditional Phase 1 sections.
 if [ "$WITH_FOLLOWUP" -eq 1 ]; then
-    section "9. Manual: regenerate latest follow-up and assert shape"
+    section "10. Manual: regenerate latest follow-up and assert shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /follow-up"
@@ -476,18 +490,18 @@ if [ "$WITH_FOLLOWUP" -eq 1 ]; then
         fi
     fi
 else
-    section "9. Manual follow-up test (skipped)"
+    section "10. Manual follow-up test (skipped)"
     info "Re-run with --with-followup to regenerate the latest follow-up and assert Phase 1 shape."
 fi
 
-# ── 10. Manual half: generate today's digest and assert Phase 3 shape ───────
+# ── 11. Manual half: generate today's digest and assert Phase 3 shape ───────
 # Gated by --with-digest. Force-generates today's digest by invoking /digest
 # directly (bypasses the scheduler's Mon/Thu 10am gate). The digest file is
 # named ~/Briefings/$(date +%Y-%m-%d)-1000-digest.md; this section deletes any
 # existing file at that path before invoking /digest so the regeneration runs
 # fresh.
 if [ "$WITH_DIGEST" -eq 1 ]; then
-    section "10. Manual: generate today's digest and assert shape"
+    section "11. Manual: generate today's digest and assert shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /digest"
@@ -560,7 +574,7 @@ if [ "$WITH_DIGEST" -eq 1 ]; then
         fi
     fi
 else
-    section "10. Manual digest test (skipped)"
+    section "11. Manual digest test (skipped)"
     info "Re-run with --with-digest to force-generate today's digest and assert Phase 3 shape."
 fi
 

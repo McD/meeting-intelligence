@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-05-27 — Phase 3 v1: twice-weekly digest (Mon/Thu 10am) of open commitments from ~/.briefings/decisions.jsonl. Three sections (Yours / Owed to you / Nudge drafts) with reply-keyword updates (done:/more:/drop:/send:/cancel/extend) handled by commands/follow-up.md Step 0's awaiting-digest branch. -->
+<!-- version: 2026-05-27 Phase 4 — adds period themes one-liner at the top (find_patterns global view). Previous: 2026-05-27 Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -154,6 +154,8 @@ Save to `$DIGEST_FILE` (from Step 0), then `chmod 600` the file.
 # Actions tracker
 **<Day>, <DD Mon YYYY> | 10:00 <TZ>**
 
+*Period themes: topic1 (N), topic2 (M), topic3 (K)*
+
 ## Yours
 1. *(open N days)* <summary> — <meeting name>, <DD Mon>
 2. *done?* *(open N days)* <summary> — <meeting name>, <DD Mon>
@@ -181,6 +183,17 @@ Reply to update:
 - `send: 1` — fire Nudge draft #1
 - `cancel` — drop this digest thread
 - `extend` — reset the 30-day reply window
+```
+
+**Period themes line (Phase 4):** Below the date heading, before `## Yours`, render an italic one-liner of recurring topics from the ledger. Call `briefings_mcp.query.find_patterns(window_days=60, min_count=3, limit=3)` (no attendee or topic filter — global view). Format: `*Period themes: topic1 (N), topic2 (M), topic3 (K)*`. Omit the line entirely when `find_patterns` returns an empty list. This is contextual scene-setting, not a section heading.
+
+```bash
+THEMES_OUT=$(python3 <<'PYEOF'
+import json
+from briefings_mcp.query import find_patterns
+print(json.dumps(find_patterns(window_days=60, min_count=3, limit=3)))
+PYEOF
+)
 ```
 
 **Omit-when-empty**: if there are no Yours items, omit `## Yours` entirely. Same for `## Owed to you` and `## Nudge drafts`. The footer always appears (as long as the digest was generated at all).

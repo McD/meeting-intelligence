@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-27 Phase 2 — replaces Why? capture with expand/quote/cancel/extend reply keywords. Step 0 now has three branches: retirement (legacy awaiting-why files), awaiting-reply (new), transcript-request (unchanged). Phase 1 (same date) added Notable threads, Source, Counterparty read, confidence callouts, hardened Open questions. v1 (2026-05-19) added --force, ledger writes, awaiting-transcript state. -->
+<!-- version: 2026-05-27 Phase 4 — adds ## Pattern flags section between Counterparty read and Source (find_patterns scoped to this meeting's topics). Step 0 now has four branches (retirement / awaiting-reply / awaiting-digest / transcript-request). Previous: Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords; Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -457,6 +457,10 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 ## Counterparty read
 [1-2 sentence read on what the external attendees seemed to care about most]
 
+## Pattern flags
+- **topic** has come up in N prior meetings — likely worth a focused discussion
+- **topic** has come up in M prior meetings
+
 ## Source
 - Transcript: [link or file path from $TRANSCRIPT_SOURCE]
 - Calendar: [link from $CALENDAR_EVENT_URL]
@@ -475,6 +479,21 @@ The reply-keyword footer always renders. It sits below `## Source` (or below whi
 Skip any section that has no content. Specifically:
 
 - **`## Counterparty read`** — render only when `is_external` (computed in Step 4) is `true` *and* Step 3 produced counterparty content. For internal-only meetings (`is_external: false`), omit this section unconditionally regardless of what Step 3 returned. This is belt-and-braces — Step 3's prompt already restricts extraction to external/mixed meetings, but the Step 5 check guarantees the section never leaks into internal follow-ups.
+- **`## Pattern flags`** (Phase 4) — render only when this meeting reinforced a recurring theme. After Step 4's ledger writes, call `briefings_mcp.query.find_patterns(window_days=60, min_count=3, limit=3, topic_filter=<this meeting's topic tags>)`. For each `(topic, count)` returned, render one bullet: `- **<topic>** has come up in <N> prior meetings` (the first bullet may add `— likely worth a focused discussion` if its count is the highest of the three). Omit the entire section when `find_patterns` returns an empty list. The Python heredoc shape mirrors Step 4:
+
+  ```bash
+  PATTERNS_OUT=$(TOPICS_JSON='["pricing","q3-plan"]' \
+                 python3 <<'PYEOF'
+  import os, json
+  from briefings_mcp.query import find_patterns
+  topics = json.loads(os.environ["TOPICS_JSON"])
+  patterns = find_patterns(window_days=60, min_count=3, limit=3, topic_filter=topics)
+  print(json.dumps(patterns))
+  PYEOF
+  )
+  ```
+
+  Parse `$PATTERNS_OUT` as a JSON array of `[topic, count]` pairs.
 - **`## Source`** — if both `$TRANSCRIPT_SOURCE` and `$CALENDAR_EVENT_URL` are empty, omit the section entirely. If only one is empty, render the section with just the non-empty entry. Format transcript links as plain markdown `[link or file path](url)` when the value is a URL; render `file://` paths verbatim (no surrounding link syntax) so they remain copy-pasteable on the same machine.
 
 ---

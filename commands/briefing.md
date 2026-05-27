@@ -1,5 +1,5 @@
 # Pre-meeting briefing
-<!-- version: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
+<!-- version: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Previous: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
 
 Generate a briefing document for upcoming meetings (internal and external), pulling context from Gmail, Drive, and Slack.
 
@@ -181,6 +181,27 @@ Parse `$DELTA_OUT` as a JSON array. Use the results to compose the `Delta:` sect
 - **Empty array** (no overlap, or ledger missing/empty): render the literal text `No prior touchpoints with these attendees.`
 - **Non-empty:** render up to 2 entries. For each, surface the `summary`, the `type` (`decision` or `commitment`), the `created_at` date, and any state-bearing fields (`state` for commitments, `resolved` for decisions). The `Delta:` line should reference the prior touchpoint specifically — e.g. "Pricing memo committed Apr 30, still open (state: open)" — not describe the meeting from scratch.
 
+#### Patterns (Phase 4)
+
+Right after `$DELTA_OUT`, gather pattern flags for the SITREP block. Patterns are recurring topic tags this meeting's attendees keep raising across recent ledger entries — what their fingerprint of concerns looks like.
+
+```bash
+PATTERNS_OUT=$(ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
+               python3 <<'PYEOF'
+import os, json
+from briefings_mcp.query import find_patterns
+
+attendees = json.loads(os.environ["ATTENDEES_JSON"])
+patterns = find_patterns(window_days=60, min_count=3, limit=3, attendees=attendees)
+print(json.dumps(patterns))
+PYEOF
+)
+```
+
+Parse `$PATTERNS_OUT` as a JSON array of `[topic, count]` pairs:
+- **Empty:** omit the `Patterns:` line in the SITREP block entirely.
+- **Non-empty:** render `**Patterns:** topic1 (N), topic2 (M), topic3 (K)` — comma-separated, count in parentheses, lowercased topics. Matches the data shape; no editorializing.
+
 ### Step 5: Assemble the briefing
 
 Save to `~/Briefings/YYYY-MM-DD-HHmm-meeting-slug.md` where the slug is the meeting title lowercased with spaces replaced by hyphens, truncated to 50 characters.
@@ -236,6 +257,10 @@ For **external or mixed meetings only**, append:
 
 For **internal-only meetings** (every attendee on `@$COMPANY_DOMAIN`), omit the `Counterparty:` section entirely — do not render an empty section, do not render a "not applicable" stub.
 
+For **all meetings** (Phase 4), after `Comment:` (and `Counterparty:` when present):
+
+- **`Patterns:`** — recurring topic tags from `$PATTERNS_OUT`. Renders only when ≥1 topic crosses the threshold (3 entries in the last 60 days, filtered by this meeting's attendees). Format: `**Patterns:** topic1 (N), topic2 (M), topic3 (K)`. Omit the line entirely when `$PATTERNS_OUT` is empty.
+
 #### Detail body
 
 Below the SITREP block, render the detail body — the attendee/document/transcript research from Steps 2–4 as a sequence of `##`-level sections (Attendees, Agenda, Linked documents, Related documents, Prep notes). The SITREP block sits on top; the detail body is the scannable "if you want more" context underneath. Skip any sub-section that has no content.
@@ -273,6 +298,8 @@ Use this structure (skip any Detail sub-section that has no content):
 **Comment:** [one or two sentences of system interpretation]
 
 **Counterparty:** [substantive read, OR the literal thin-data label followed by role-based assumptions]
+
+**Patterns:** topic1 (N), topic2 (M)
 
 ## Attendees
 
@@ -325,6 +352,8 @@ Use this structure (skip any Detail sub-section that has no content):
 
 **Comment:** [one or two sentences of system interpretation]
 
+**Patterns:** topic1 (N), topic2 (M)
+
 ## Attendees
 
 ### [Attendee name]
@@ -353,7 +382,7 @@ Use this structure (skip any Detail sub-section that has no content):
 
 Before saving, verify:
 - The first heading line is exactly `# <VERDICT> — <Meeting title>` and the verdict word is one of `DECIDE-TODAY`, `DELEGATE`, `DEFER`, `DECLINE`, `PREP-HARD`, `LOW-STAKES`, `MOVE-ASYNC`. No free-form verdicts. (`commands/follow-up.md` Step 4 reads this line to compute the high-stakes filter.)
-- The SITREP block contains `Trap:`, `Delta:`, and `Comment:` in that order. For external/mixed meetings, `Counterparty:` follows. For internal-only meetings, `Counterparty:` is absent.
+- The SITREP block contains `Trap:`, `Delta:`, and `Comment:` in that order. For external/mixed meetings, `Counterparty:` follows. For internal-only meetings, `Counterparty:` is absent. `Patterns:` (Phase 4) is appended after `Counterparty:` (when present) or after `Comment:` (when absent), only when at least one topic crossed the 3-entry threshold; otherwise the line is omitted.
 - `Delta:` either lists up to 2 prior touchpoints from the ledger, or renders the literal text `No prior touchpoints with these attendees.` Never blank, never invented from non-ledger sources.
 - When the Counterparty section uses the thin-data label, the text is exactly `Limited counterparty signal — first known interaction; role assumptions only` and what follows is role-based assumptions only — no fabricated history.
 - The briefing is scannable in under 2 minutes
