@@ -4,10 +4,8 @@ Per R1, the ledger lives at ~/.briefings/decisions.jsonl with mode 600 inside a 
 The MCP server (U4) is the read path for external agents; commands/briefing.md reads the JSONL
 inline; commands/follow-up.md is the sole writer. v1 is single-writer, so no locking.
 
-Writes are append-only with one exception: `update_why` rewrites the file atomically to fold
-captured reasons into existing entries (U3 / R14). The supersede-event alternative was rejected
-because it would push reconciliation into `query.py` / `index.py` for every read; an atomic
-rewrite stays simple and safe given the single-writer guarantee.
+Writes are append-only. Phase 2 removed `update_why`, the one historical rewrite path, when the
+Why? capture loop was retired — the ledger is now truly append-only.
 """
 
 from __future__ import annotations
@@ -64,72 +62,6 @@ def append(entry: dict) -> None:
         f.write(line)
         f.flush()
         os.fsync(f.fileno())
-
-
-def update_why(
-    entry_id: str,
-    *,
-    why: str | None = None,
-    why_notes_append: str | None = None,
-) -> bool:
-    """Fold a captured reason into an existing ledger entry.
-
-    Used by the why-capture flow (U3 / R14) when a user replies to a follow-up email. The
-    matching entry's `why` field is replaced when `why` is given; `why_notes_append` is
-    concatenated onto the existing `why_notes` (newline-separated when both sides are
-    non-empty).
-
-    Returns True when an entry was matched and rewritten, False when no entry matched the id
-    (the ledger file is left untouched in that case). The whole file is rewritten atomically
-    via a tmp file in the same directory plus os.replace — see the module docstring for why
-    we accept this over append-only supersede events.
-
-    Raises FileNotFoundError when the ledger file does not yet exist (caller should not be
-    asking for updates against a ledger that has never been written).
-    """
-    if why is None and why_notes_append is None:
-        return False
-    if not LEDGER_PATH.exists():
-        raise FileNotFoundError(LEDGER_PATH)
-
-    matched = False
-    lines_out: list[str] = []
-    with open(LEDGER_PATH, "r", encoding="utf-8") as f:
-        for raw_line in f:
-            stripped = raw_line.strip()
-            if not stripped:
-                lines_out.append(raw_line)
-                continue
-            entry = json.loads(stripped)
-            if entry.get("id") == entry_id:
-                matched = True
-                if why is not None:
-                    entry["why"] = why
-                if why_notes_append:
-                    existing = entry.get("why_notes") or ""
-                    entry["why_notes"] = (
-                        f"{existing}\n{why_notes_append}" if existing else why_notes_append
-                    )
-                lines_out.append(
-                    json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
-                )
-            else:
-                # Preserve the original line byte-for-byte (sans the strip-blank-noop) so we
-                # don't reformat untouched entries.
-                lines_out.append(raw_line if raw_line.endswith("\n") else raw_line + "\n")
-
-    if not matched:
-        return False
-
-    tmp_path = LEDGER_PATH.with_suffix(".jsonl.tmp")
-    with _restricted_umask():
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.writelines(lines_out)
-            f.flush()
-            os.fsync(f.fileno())
-    os.chmod(tmp_path, _FILE_MODE)
-    os.replace(tmp_path, LEDGER_PATH)
-    return True
 
 
 def iter_entries(since: date | None = None) -> Iterator[dict]:

@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-27 — Phase 1 richness upgrades: Notable threads, Source link, Counterparty read (ext/mixed only), inline confidence callouts on actions, hardened Open questions prompt. v1 (2026-05-19) added --force, ledger writes, why-prompt emails, awaiting-why state. -->
+<!-- version: 2026-05-27 Phase 2 — replaces Why? capture with expand/quote/cancel/extend reply keywords. Step 0 now has three branches: retirement (legacy awaiting-why files), awaiting-reply (new), transcript-request (unchanged). Phase 1 (same date) added Notable threads, Source, Counterparty read, confidence callouts, hardened Open questions. v1 (2026-05-19) added --force, ledger writes, awaiting-transcript state. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -34,67 +34,93 @@ Force mode is the right path when a transcript appeared late, when ledger writes
 
 Before anything else, scan `~/Briefings/` for files matching `*-awaiting-*.md`.
 
-**Dispatch by filename.** The single glob covers two distinct state-file shapes that use the same `*-awaiting-*.md` naming convention. Inspect each match's basename:
+**Dispatch by filename.** The single glob covers three state-file shapes. Inspect each match's basename:
 
-- If the basename contains `-awaiting-why-` (e.g. `2026-05-19-1500-awaiting-why-acme-renewal.md`) → follow the **Why-capture branch** below (added in U3 for R14).
-- Otherwise (basename contains `-awaiting-` but not `-awaiting-why-`) → follow the **Transcript-request branch** below (the original flow).
+- If the basename contains `-awaiting-why-` → **Retirement branch** below. These are Phase 1 artifacts from the now-removed Why? capture loop; log once and delete.
+- If the basename contains `-awaiting-reply-` → **Awaiting-reply branch** below (Phase 2 reply-keyword handler).
+- Otherwise (basename contains `-awaiting-` but neither sub-prefix) → **Transcript-request branch** below (unchanged from v1).
 
 Process every awaiting file before falling through to Step 1.
 
 ---
 
-### Why-capture branch
+### Retirement branch (Phase 1 awaiting-why files)
 
-These state files were written by Step 6 of a prior follow-up run when high-stakes entries were appended to the ledger. Each one records the Gmail thread the user can reply to and the ledger entry UUIDs pending a `why` answer.
+The Why? capture loop was removed in Phase 2. Any `*-awaiting-why-*.md` file still on disk is a leftover from before the upgrade. Retire it cleanly:
+
+1. Log `"Retiring Phase 1 awaiting-why file: [basename] — feature replaced in Phase 2"` to `~/Briefings/scheduler.log`.
+2. Delete the file.
+3. Do **not** touch the ledger entries the file pointed at — they remain valid; only the polling loop is gone.
+
+That's the entire branch. No Gmail fetch, no parsing, no ledger writes.
+
+---
+
+### Awaiting-reply branch
+
+These state files were written by Step 6 of a prior follow-up run. Each one points at the Gmail thread of the original follow-up email and at the meeting's transcript source, so the user's reply can be turned into a follow-up action.
 
 1. Read the file — flat frontmatter, one key per line:
-   - `thread_id:` — Gmail thread ID of the follow-up email
+   - `thread_id:` — Gmail thread ID of the original follow-up email
    - `meeting:` — meeting name
-   - `slug:` — the date+time meeting slug
-   - `pending_entry_ids:` — JSON array of ledger entry UUIDs awaiting `why`, in the order they appeared as `1: …`, `2: …`, etc. under the `## Why?` section of the follow-up email
+   - `slug:` — date+time meeting slug
+   - `transcript_source:` — URL or `file://` path captured in Step 2 of the original run (may be empty)
    - `created_at:` — ISO timestamp when the follow-up was sent
 
-2. **Check expiry**: if `created_at` is more than 7 days ago:
-   - Delete the awaiting-why file
-   - Log `"Why-capture expired for [meeting] — no reply received"` to `~/Briefings/scheduler.log`
+2. **Check expiry**: if `created_at` is more than 30 days ago:
+   - Delete the awaiting-reply file
+   - Log `"Awaiting-reply expired for [meeting] — no reply within 30 days"` to `~/Briefings/scheduler.log`
    - Skip this entry
 
 3. **Check Gmail thread for a reply** using the stored thread ID:
    ```bash
    gws gmail users threads get --params '{"userId": "me", "id": "[thread_id]"}'
    ```
-   If the `messages` array has more than 1 entry, a reply exists. Use the **last** message in the array — its `id` is the reply to read.
+   If `messages` array has only 1 entry, no reply yet — skip; the scheduler retries on the next 15-minute cycle.
 
-4. **If no reply yet** (only 1 message in thread) — skip. The scheduler will check again on the next 15-minute cycle.
+4. **If a reply is found**, read the last message in the array:
+   ```bash
+   gws gmail +read --message-id "[message_id]"
+   ```
 
-5. **If a reply is found**:
-   - Read the reply body: `gws gmail +read --message-id "[message_id]"`
-   - Parse the body and apply updates by calling `briefings_mcp.why_capture.parse_and_update`. The parser strips quoted lines (`>` prefix is universal across Gmail/Apple Mail/Outlook/phone clients), matches each remaining line against `^\s*(\d+):\s+(.+)$`, indexes `N` into `pending_entry_ids` at position `N-1`, and updates that ledger entry's `why`. Unmatched non-quoted prose appends to `why_notes` on the **last** entry in `pending_entry_ids` — the most-recently-prompted entry from this thread. See `briefings_mcp/why_capture.py` for the parser; the heredoc here is the thin shell that loads inputs and emits JSON:
+5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows). Match against:
 
-     ```bash
-     PARSE_OUT=$(REPLY_BODY="$REPLY_BODY" \
-                 PENDING_IDS_JSON='["<uuid1>","<uuid2>","<uuid3>"]' \
-                 python3 <<'PYEOF'
-     import json, os
-     from briefings_mcp import why_capture
+   - `cancel` / `skip` / `no` / `done` — delete the awaiting-reply file. Log `"Awaiting-reply cancelled by user for [meeting]"`. Done.
 
-     reply = os.environ.get("REPLY_BODY", "")
-     pending = json.loads(os.environ.get("PENDING_IDS_JSON", "[]"))
-     print(json.dumps(why_capture.parse_and_update(reply, pending)))
-     PYEOF
-     )
-     ```
+   - `extend` / `wait` / `more time` — rewrite the state file with `created_at: <now>`. All other fields unchanged. Log `"Awaiting-reply extended for [meeting] — 30-day clock reset"`. Done.
 
-   - Parse `$PARSE_OUT` as JSON:
-     - `matched_count` (int) — how many `N: …` lines updated a ledger entry on this cycle. Use for the log line.
-     - `all_answered` (bool) — true when every UUID in the original `pending_entry_ids` now has a non-empty `why` in the ledger.
-     - `warnings` (array of strings) — log each to `~/Briefings/scheduler.log` so out-of-range indices and ledger lookup failures stay visible. Do not abort on warnings.
+   - `expand: <request>` — the most powerful keyword. The user is asking for a focused re-run against the transcript with a specific ask:
+     1. Fetch the transcript text from `transcript_source` using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
+     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Leave the state file in place. Log a one-line WARN.
+     3. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more (e.g. "expand: write a 5-page document"). Format the output as plain prose or short bulleted lists — match the spirit of the original ask. Don't add scaffolding the user didn't ask for (no executive summaries, table of contents, or meta-commentary).
+     4. Send the result as an email reply to the same thread: `gws gmail +send --thread-id "$thread_id" --subject "Re: Follow-up: [meeting]" --body "$RESULT_HTML" --html`. Also Slack-mirror if `~/.slack_webhook` exists.
+     5. Leave the awaiting-reply file in place — further `expand:` or `quote:` replies in the same thread are still welcome.
+     6. Log `"Expand request handled for [meeting]: [first 60 chars of request]"`.
 
-   - **If `all_answered` is true**: delete the awaiting-why file. Log `"Why-capture complete for [meeting] — N entries updated this cycle"`.
+   - `quote: <topic>` — extract direct quotes:
+     1. Fetch the transcript text the same way as `expand:`.
+     2. If fetch fails, same graceful "transcript not available" reply.
+     3. Otherwise, scan the transcript for 3–6 direct quotes where speakers discuss or reference `<topic>`. Match fuzzy (substring + semantic). Output format:
+        ```
+        Quotes about "[topic]" from [meeting]:
 
-   - **If `all_answered` is false**: leave the awaiting-why file untouched. The scheduler will re-poll on the next cycle; if a further reply lands, the same parser runs against the new latest message. Numbered matches are idempotent (same `why` value re-applied is a no-op); a prose dedupe guard in the parser (see `briefings_mcp/why_capture.py`) prevents `why_notes` from doubling up when the same reply is re-processed. Log `"Why-capture partial for [meeting] — N entries updated this cycle, awaiting more"`.
+        > Speaker name: "quoted text"
 
-   - Do **not** rewrite `pending_entry_ids` to drop matched indices: the index map must stay stable so subsequent replies can keep using `N` to address the same original entries. Completion is detected by reading ledger state, not by shrinking the pending list. Do **not** bump `created_at` either — the 7-day clock runs from the original follow-up send.
+        > Speaker name: "quoted text"
+        ```
+        If fewer than 3 quotes match the topic, say so honestly: "Only 2 direct quotes found about '<topic>'; the meeting may not have covered it deeply."
+     4. Send as email reply + Slack mirror, same as `expand:`.
+     5. Leave the awaiting-reply file in place.
+     6. Log `"Quote request handled for [meeting]: [topic]"`.
+
+   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. Leave the state file in place. Log `"Unrecognized reply for [meeting]: <first line>"`.
+
+6. Process every awaiting-reply file before falling through to Step 1.
+
+**Implementation notes:**
+- Keyword matching is case-insensitive on the prefix (`Expand:`, `EXPAND:`, and `expand:` all match) but case-preserving on the argument.
+- A reply containing only the keyword with no argument (`expand:` alone or `quote:` alone) should respond with: `"Specify what to <expand|quote>: e.g. \`<keyword>: <something>\`."` — same one-line-reply pattern as the unrecognized branch.
+- The `expand:` and `quote:` handlers should NOT write anything to the ledger. The ledger is for decisions and commitments extracted at follow-up time; reply-driven outputs are conversational and ephemeral. The output email itself is the artifact.
 
 ---
 
@@ -293,18 +319,12 @@ Each extracted item becomes one entry in the append-only ledger at `~/.briefings
 
 For each item, infer **1–3 short topic tags** (e.g. `"pricing"`, `"q3-plan"`, `"renewal"`) from its content. Topics are fuzzy-matched by substring in the MCP server, so consistency is helpful but not strict.
 
-**High-stakes flag** (per R12) is computed once for the meeting and applied to every entry from it:
-
-1. **Verdict** — look in `~/Briefings/` for a prior briefing file whose name starts with the same `YYYY-MM-DD-HHmm-` prefix as this follow-up and does **not** contain `-followup-` or `-awaiting-`. If found, scan its first heading line for a word from this closed set: `DECIDE-TODAY`, `DELEGATE`, `DEFER`, `DECLINE`, `PREP-HARD`, `LOW-STAKES`, `MOVE-ASYNC`. If no briefing exists or no verdict word is present, default to `LOW-STAKES`.
-2. **is_external** — `true` if any attendee has an email outside `$COMPANY_DOMAIN`; `false` otherwise.
-3. **attendee_history_count** — the maximum count of prior ledger entries for any of this meeting's attendees (computed inline below).
+**is_external** — compute `true` if any attendee has an email outside `$COMPANY_DOMAIN`, `false` otherwise. Step 5 uses this to gate the `## Counterparty read` section. (The Phase 1 high-stakes flag and its inputs — verdict, attendee_history_count — were removed in Phase 2 along with the Why? capture loop.)
 
 Build the items list and append in one Python invocation. The heredoc pattern mirrors `scripts/scheduler.sh` line 81:
 
 ```bash
-APPEND_OUT=$(MEETING_VERDICT="<verdict word or LOW-STAKES>" \
-             IS_EXTERNAL="<true|false>" \
-             SOURCE_MEETING="YYYY-MM-DD-HHmm-slug" \
+APPEND_OUT=$(SOURCE_MEETING="YYYY-MM-DD-HHmm-slug" \
              ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
              ITEMS_JSON='[
                {"type":"commitment","summary":"Send pricing memo to Acme","topics":["pricing","acme"],"owner":"You","due":"2026-05-26","state":"open"},
@@ -312,25 +332,12 @@ APPEND_OUT=$(MEETING_VERDICT="<verdict word or LOW-STAKES>" \
              ]' \
              python3 <<'PYEOF'
 import os, json, sys, uuid
-from collections import Counter
 from datetime import datetime, timezone
-from briefings_mcp import ledger, schema
+from briefings_mcp import ledger
 
-verdict        = os.environ.get("MEETING_VERDICT", "LOW-STAKES")
-is_external    = os.environ.get("IS_EXTERNAL", "false").lower() == "true"
 source_meeting = os.environ["SOURCE_MEETING"]
 attendees      = json.loads(os.environ["ATTENDEES_JSON"])
 items          = json.loads(os.environ["ITEMS_JSON"])
-
-# attendee_history_count: max prior ledger entries for any current attendee
-counter = Counter()
-for entry in ledger.iter_entries():
-    for a in entry.get("attendees", []):
-        if a in attendees:
-            counter[a] += 1
-max_count = max(counter.values(), default=0)
-
-high_stakes = schema.is_high_stakes(verdict, is_external, max_count)
 
 now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 results = []
@@ -340,6 +347,8 @@ for item in items:
     item.setdefault("attendees", attendees)
     item.setdefault("source_meeting", source_meeting)
     item.setdefault("topics", [])
+    # why/why_notes kept as empty-string defaults — schema fields preserved for
+    # ledger entries written before Phase 2 removed the capture loop.
     item.setdefault("why", "")
     item.setdefault("why_notes", "")
     try:
@@ -349,16 +358,15 @@ for item in items:
         print(f"WARN: ledger.append failed for {item.get('summary','?')[:60]!r}: {exc}", file=sys.stderr)
         results.append({"ok": False, "summary": item.get("summary", ""), "error": str(exc)})
 
-print(json.dumps({"high_stakes": high_stakes, "results": results}))
+print(json.dumps({"results": results}))
 PYEOF
 )
 ```
 
 Parse `$APPEND_OUT` as JSON:
-- `high_stakes` (bool) gates the why-prompt section in Step 5 and the awaiting-why state file in Step 6.
-- `results` (array) is ordered the same as `ITEMS_JSON`. Entries with `ok: true` are the ones that will be numbered `1..N` in the why-prompt section (in array order). Entries with `ok: false` are skipped from the prompts and from `pending_entry_ids` — the follow-up is still delivered (R-level: better to ship a degraded follow-up than skip it entirely).
+- `results` (array) is ordered the same as `ITEMS_JSON`. Entries with `ok: false` failed to append (logged to stderr) but do not block delivery — the follow-up is still sent.
 
-**If no items were extracted** (`ITEMS_JSON='[]'`), the append step is a no-op: `high_stakes` falls back to the meeting-level flag but `results` is empty, so no Why? section and no awaiting-why file will be produced downstream.
+**If no items were extracted** (`ITEMS_JSON='[]'`), the append step is a no-op and `results` is empty. The follow-up is still assembled and delivered (a meeting can be summary-only).
 
 ---
 
@@ -396,31 +404,28 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 ## Source
 - Transcript: [link or file path from $TRANSCRIPT_SOURCE]
 - Calendar: [link from $CALENDAR_EVENT_URL]
+
+---
+
+Reply to this thread to dig deeper:
+- `expand: <request>` — re-runs against the transcript (e.g. "expand: write up Mark's industry overview as a one-pager")
+- `quote: <topic>` — pulls direct quotes about that topic
+- `cancel` — drops the reply thread for this meeting
+- `extend` — keeps the thread open another 30 days
 ```
+
+The reply-keyword footer always renders. It sits below `## Source` (or below whichever section ended up last after the omit-when-empty rule), separated by a horizontal rule. The footer is plain prose, not a heading — it is the closing instruction line of every follow-up, not another section to read.
 
 Skip any section that has no content. Specifically:
 
 - **`## Counterparty read`** — render only when `is_external` (computed in Step 4) is `true` *and* Step 3 produced counterparty content. For internal-only meetings (`is_external: false`), omit this section unconditionally regardless of what Step 3 returned. This is belt-and-braces — Step 3's prompt already restricts extraction to external/mixed meetings, but the Step 5 check guarantees the section never leaks into internal follow-ups.
 - **`## Source`** — if both `$TRANSCRIPT_SOURCE` and `$CALENDAR_EVENT_URL` are empty, omit the section entirely. If only one is empty, render the section with just the non-empty entry. Format transcript links as plain markdown `[link or file path](url)` when the value is a URL; render `file://` paths verbatim (no surrounding link syntax) so they remain copy-pasteable on the same machine.
 
-**Why? section (high-stakes follow-ups only):** If Step 4 returned `high_stakes: true` *and* at least one entry has `ok: true`, append a final `## Why?` section to the file. Number the entries `1..N` over the successfully-appended entries only (in `results` order — so gaps from failed appends are renumbered away, not left as missing). Use this exact shape:
-
-```markdown
-## Why?
-1: Why? [first successfully-appended entry's summary, ≤80 chars]
-2: Why? [second successfully-appended entry's summary]
-3: Why? [third successfully-appended entry's summary]
-
-Reply to this thread with one line per entry: `N: <reason>`. Skip any you don't want to capture.
-```
-
-If the meeting is low-stakes, no items were extracted, or every append failed, omit the `## Why?` section entirely.
-
 ---
 
 ## Step 6: Deliver
 
-Send via both channels. Email is sent first because its `threadId` is needed for the awaiting-why state file.
+Send via both channels. Email is sent first because its `threadId` is needed for the awaiting-reply state file.
 
 **Email** — to $MY_EMAIL using `--html`, subject: `Follow-up: [Meeting title] ([date])`. Capture the JSON response so the `threadId` is available below.
 
@@ -468,7 +473,7 @@ SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting 
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
 
-Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. `$THREAD_ID` is used in the awaiting-why step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
+Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. `$THREAD_ID` is used in the awaiting-reply step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
 
 **Slack** — if `~/.slack_webhook` exists, convert to mrkdwn and POST:
 
@@ -496,24 +501,28 @@ fi
 
 Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. If `~/.slack_webhook` is not found, skip silently.
 
-**Awaiting-why state file (high-stakes follow-ups only).** When Step 4 returned `high_stakes: true` *and* at least one entry has `ok: true`, record the pending state so the scheduler (U3) can match a reply back to the ledger entries. Mirror the awaiting-transcript file shape from Step 2:
+**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal):
 
 ```bash
 umask 077
-AWAITING_WHY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-why-slug.md
-cat >"$AWAITING_WHY" <<EOF
+AWAITING_REPLY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-slug.md
+cat >"$AWAITING_REPLY" <<EOF
 thread_id: $THREAD_ID
 meeting: [Meeting Name]
 slug: YYYY-MM-DD-HHmm-slug
-pending_entry_ids: ["<id of entry 1 from results>","<id of entry 2 from results>","<id of entry 3 from results>"]
+transcript_source: $TRANSCRIPT_SOURCE
 created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-chmod 600 "$AWAITING_WHY"
+chmod 600 "$AWAITING_REPLY"
 ```
 
-The `pending_entry_ids` array lists the successfully-appended entry UUIDs from Step 4's `results`, in the **same order** they appear under `## Why?` in the follow-up file — so the reply line `N: <reason>` indexes into the array at position `N-1`.
+- `thread_id` ties subsequent replies back to the original follow-up email (Gmail thread).
+- `transcript_source` is the URL or `file://` path captured in Step 2 (Phase 1). The awaiting-reply branch in Step 0 re-fetches the transcript from here when `expand:` or `quote:` keywords arrive — the transcript content itself is **not** stored on disk.
+- `created_at` drives the 30-day expiry. `extend` rewrites this to "now"; `cancel` deletes the file entirely.
 
-Skip awaiting-why file creation entirely when the meeting is low-stakes, when no items were extracted, when every append failed, or when `$THREAD_ID` is empty (in that last case, log `"WARN: follow-up sent but threadId not captured — awaiting-why state skipped for [meeting]"` to `~/Briefings/scheduler.log` so the gap is visible).
+If `$TRANSCRIPT_SOURCE` is empty (rare — Phase 1's Step 2 captures it in all five transcript-search branches plus the Step 0 reply-as-transcript path), leave the field empty in the state file. The Step 0 awaiting-reply branch responds to `expand:` and `quote:` with a graceful "transcript no longer available" message in that case.
+
+Skip awaiting-reply file creation when `$THREAD_ID` is empty (log `"WARN: follow-up sent but threadId not captured — awaiting-reply state skipped for [meeting]"` to `~/Briefings/scheduler.log` so the gap is visible). The follow-up email itself is still considered delivered.
 
 ---
 

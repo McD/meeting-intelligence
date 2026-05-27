@@ -1,8 +1,12 @@
-"""Ledger schema: the single source of truth for entry shape, valid values, and the high-stakes filter.
+"""Ledger schema: the single source of truth for entry shape and valid values.
 
-Referenced by briefings_mcp.ledger (for validation), commands/follow-up.md (for classification +
-high-stakes filtering), and commands/briefing.md (for the verdict word set). Any future change to
-the schema or the high-stakes rule lands here so it propagates consistently.
+Referenced by briefings_mcp.ledger (for validation) and commands/briefing.md (for the verdict
+word set). Any future change to the schema lands here so it propagates consistently.
+
+The `why` and `why_notes` fields are preserved in REQUIRED_BASE_FIELDS for backwards
+compatibility with ledger entries written before Phase 2 (when the Why? capture loop was
+retired). New writes set them to empty strings; reads continue to surface populated values
+from historical entries.
 """
 
 from __future__ import annotations
@@ -23,13 +27,10 @@ VERDICTS = frozenset({
     "MOVE-ASYNC",
 })
 
-HIGH_STAKES_VERDICTS = frozenset({"DECIDE-TODAY", "DECLINE", "PREP-HARD"})
-
-HIGH_STAKES_ATTENDEE_HISTORY_THRESHOLD = 5
-
 SUMMARY_MAX_CHARS = 140
 
-# Per R2 — every ledger entry, regardless of type, carries these keys.
+# Per R2 — every ledger entry, regardless of type, carries these keys. `why` and `why_notes`
+# are preserved for backwards compatibility with entries written before Phase 2.
 REQUIRED_BASE_FIELDS = (
     "id",
     "created_at",
@@ -94,18 +95,3 @@ def validate(entry: dict) -> None:
             raise SchemaError(f"decision missing required fields: {missing_d}")
         if not isinstance(entry["resolved"], bool):
             raise SchemaError("decision.resolved must be a bool")
-
-
-def is_high_stakes(verdict: str, is_external: bool, attendee_history_count: int) -> bool:
-    """Per R12 — an entry is high-stakes when ANY of: verdict is in the high-stakes set,
-    the meeting is external/mixed, OR an attendee has at least the threshold of prior ledger entries.
-
-    The follow-up email composes why-prompts only for high-stakes entries.
-    """
-    if verdict in HIGH_STAKES_VERDICTS:
-        return True
-    if is_external:
-        return True
-    if attendee_history_count >= HIGH_STAKES_ATTENDEE_HISTORY_THRESHOLD:
-        return True
-    return False

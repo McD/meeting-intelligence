@@ -3,19 +3,21 @@
 #
 # Two halves:
 #   * Automated (default): file-system + package-import + MCP-registration +
-#     unit smoke tests (smoke_test_u3.py, smoke_test_u4.py, smoke_test_u4_boot.sh)
-#     + an in-process MCP query roundtrip against a TEMP ledger so the real
+#     unit smoke tests (smoke_test_u4.py, smoke_test_u4_boot.sh) + an
+#     in-process MCP query roundtrip against a TEMP ledger so the real
 #     ~/.briefings/decisions.jsonl is never mutated. Exits 0 on all-pass, 1
 #     on any failure.
-#   * Manual (--with-email): sends a real test follow-up to $MY_EMAIL with
-#     reply-back instructions exercising U3's why-capture path. Skipped by
-#     default so the script can be re-run cheaply.
+#   * Manual (--with-briefing, --with-followup): force-regenerate the next
+#     briefing or latest follow-up and assert shape. Skipped by default
+#     since each requires a real `claude -p` call (network + API spend).
 #
-# Format mirrors scripts/smoke_test_u3.py: PASS/FAIL per step, totals at end.
+# Format: PASS/FAIL per step, totals at end.
 #
 # Usage:
-#   bash scripts/verify-v1.sh             # automated only
-#   bash scripts/verify-v1.sh --with-email # also send a test follow-up
+#   bash scripts/verify-v1.sh                                   # automated only
+#   bash scripts/verify-v1.sh --with-briefing                   # also brief
+#   bash scripts/verify-v1.sh --with-followup                   # also follow-up
+#   bash scripts/verify-v1.sh --with-briefing --with-followup   # both
 
 set -u
 
@@ -38,19 +40,16 @@ section() { echo ""; echo -e "${BOLD}# $1${NC}"; }
 info()    { echo -e "  ${BOLD}→${NC} $1"; }
 warn()    { echo -e "  ${YELLOW}!${NC} $1"; }
 
-WITH_EMAIL=0
 WITH_BRIEFING=0
 WITH_FOLLOWUP=0
 for arg in "$@"; do
     case "$arg" in
-        --with-email)    WITH_EMAIL=1 ;;
         --with-briefing) WITH_BRIEFING=1 ;;
         --with-followup) WITH_FOLLOWUP=1 ;;
         --help|-h)
-            echo "Usage: $0 [--with-briefing] [--with-followup] [--with-email]"
+            echo "Usage: $0 [--with-briefing] [--with-followup]"
             echo "  --with-briefing   Also force-regenerate the next briefing and assert SITREP shape"
             echo "  --with-followup   Also force-regenerate the latest follow-up and assert Phase 1 shape"
-            echo "  --with-email      Also send a manual follow-up reply test"
             exit 0
             ;;
         *) warn "Unknown arg: $arg" ;;
@@ -136,8 +135,8 @@ else
     fail "claude CLI" "not found at $CLAUDE_BIN"
 fi
 
-# ── 4. U3 smoke test (parser + ledger interaction) ──────────────────────────
-section "4. U3 smoke test (why-capture parser)"
+# ── 4. U4 smoke test (MCP query module in-process) ──────────────────────────
+section "4. U4 smoke test (MCP query module)"
 
 # Prefer the project .venv for tests since it's the dev environment; fall back
 # to runtime venv if a user runs verify-v1 from a fresh clone.
@@ -147,20 +146,6 @@ if [ -x "$DEV_PY" ]; then
 elif [ -x "$RUNTIME_PY" ]; then
     TEST_PY="$RUNTIME_PY"
 fi
-
-if [ -n "$TEST_PY" ]; then
-    if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_u3.py" >/tmp/u3_smoke.out 2>&1; then
-        pass "smoke_test_u3.py — all assertions pass"
-    else
-        fail "smoke_test_u3.py" "see /tmp/u3_smoke.out"
-        tail -20 /tmp/u3_smoke.out | sed 's/^/      /'
-    fi
-else
-    fail "smoke_test_u3.py" "no Python venv available"
-fi
-
-# ── 5. U4 smoke test (MCP query module in-process) ──────────────────────────
-section "5. U4 smoke test (MCP query module)"
 
 if [ -n "$TEST_PY" ]; then
     if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_u4.py" >/tmp/u4_smoke.out 2>&1; then
@@ -173,8 +158,8 @@ else
     fail "smoke_test_u4.py" "no Python venv available"
 fi
 
-# ── 6. U4 stdio boot test (FastMCP JSON-RPC protocol cleanliness) ───────────
-section "6. U4 stdio boot test (MCP protocol stays clean)"
+# ── 5. U4 stdio boot test (FastMCP JSON-RPC protocol cleanliness) ───────────
+section "5. U4 stdio boot test (MCP protocol stays clean)"
 
 # smoke_test_u4_boot.sh expects .venv/bin/python by convention. Skip with a
 # warning if the dev venv isn't provisioned — a real user won't have it.
@@ -190,8 +175,8 @@ else
     warn "  This is normal for a fresh user install; the test is dev-only."
 fi
 
-# ── 7. End-to-end MCP-query roundtrip against a fixture ledger ──────────────
-section "7. MCP-query roundtrip against fixture ledger"
+# ── 6. End-to-end MCP-query roundtrip against a fixture ledger ──────────────
+section "6. MCP-query roundtrip against fixture ledger"
 
 # Exercise the three MCP tools end-to-end without touching real ~/.briefings.
 # Uses an isolated tmpdir so re-runs are deterministic.
@@ -287,13 +272,13 @@ else
     fail "MCP-query roundtrip" "no Python venv available"
 fi
 
-# ── 8. Manual half: generate a real briefing and assert SITREP shape ────────
+# ── 7. Manual half: generate a real briefing and assert SITREP shape ────────
 # Gated by --with-briefing because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes) and a calendar with an upcoming meeting in the
 # next 2 hours. The automated half above can't cover this because briefings
 # are Claude-generated.
 if [ "$WITH_BRIEFING" -eq 1 ]; then
-    section "8. Manual: regenerate next briefing and assert SITREP shape"
+    section "7. Manual: regenerate next briefing and assert SITREP shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /briefing"
@@ -378,52 +363,17 @@ if [ "$WITH_BRIEFING" -eq 1 ]; then
         fi
     fi
 else
-    section "8. Manual briefing test (skipped)"
+    section "7. Manual briefing test (skipped)"
     info "Re-run with --with-briefing to regenerate the next briefing and assert SITREP shape."
 fi
 
-# ── 9. Manual half: send a test follow-up email (gated by --with-email) ─────
-if [ "$WITH_EMAIL" -eq 1 ]; then
-    section "9. Manual: test follow-up email (U3 why-capture path)"
-
-    MY_EMAIL=$(grep '^MY_EMAIL=' "$HOME/.briefings_config" 2>/dev/null | cut -d= -f2)
-    if [ -z "$MY_EMAIL" ]; then
-        fail "MY_EMAIL in ~/.briefings_config" "missing"
-    elif ! command -v gws >/dev/null 2>&1; then
-        fail "gws CLI" "not found — install via 'npm install -g @googleworkspace/cli'"
-    else
-        info "Sending a fixture follow-up to $MY_EMAIL..."
-        body=$(cat <<'BODY'
-This is a verify-v1.sh test message. Reply with the following two lines to exercise the why-capture path on the next scheduler cycle:
-
-1: testing the why-capture loop end-to-end
-2: confirming reply parsing strips quoted text correctly
-
-The scheduler runs every 15 minutes. After replying, watch ~/Briefings/scheduler.log for the parse to flow through.
-BODY
-)
-        if gws gmail +send --to "$MY_EMAIL" --subject "[verify-v1] why-capture test" --body "$body" >/dev/null 2>&1; then
-            pass "Test follow-up sent to $MY_EMAIL"
-            info "Reply with '1: <reason>' and '2: <reason>' to trigger U3."
-            info "Note: this only exercises the email-send path; the actual why-capture"
-            info "      polling runs on the scheduler against awaiting-why state files,"
-            info "      which are created by /follow-up — not by this test."
-        else
-            fail "gws gmail +send" "send failed"
-        fi
-    fi
-else
-    section "9. Manual email test (skipped)"
-    info "Re-run with --with-email to send a test follow-up to MY_EMAIL."
-fi
-
-# ── 10. Manual half: regenerate latest follow-up and assert Phase 1 shape ──
+# ── 8. Manual half: regenerate latest follow-up and assert Phase 1 shape ────
 # Gated by --with-followup because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes). Mirrors --with-briefing pattern: pick the most
 # recent follow-up, force-regenerate the same meeting, then grep the output
 # for mandatory and conditional Phase 1 sections.
 if [ "$WITH_FOLLOWUP" -eq 1 ]; then
-    section "10. Manual: regenerate latest follow-up and assert shape"
+    section "8. Manual: regenerate latest follow-up and assert shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /follow-up"
@@ -509,7 +459,7 @@ if [ "$WITH_FOLLOWUP" -eq 1 ]; then
         fi
     fi
 else
-    section "10. Manual follow-up test (skipped)"
+    section "8. Manual follow-up test (skipped)"
     info "Re-run with --with-followup to regenerate the latest follow-up and assert Phase 1 shape."
 fi
 

@@ -55,7 +55,7 @@ bash scripts/verify-v1.sh
 Optional flags:
 
 - `--with-briefing` — force-regenerates the next upcoming meeting's briefing and asserts the SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed meetings). Costs a real `claude -p` call and a couple of minutes.
-- `--with-email` — sends a fixture follow-up email to your `MY_EMAIL` so you can exercise the why-capture reply path.
+Replies to any follow-up email with `expand: <request>`, `quote: <topic>`, `cancel`, or `extend` are picked up by the scheduler on the next 15-minute cycle. See "Reply keywords" below for details.
 
 ## macOS permission setup
 
@@ -129,7 +129,7 @@ After install, files land here:
 ~/Briefings/scheduler.log              # Rolling log, capped at 500KB
 ~/Briefings/YYYY-MM-DD-HHmm-*.md       # One briefing per meeting
 ~/Briefings/YYYY-MM-DD-HHmm-followup-*.md
-~/Briefings/*-awaiting-why-*.md        # Why-capture state, awaiting email reply
+~/Briefings/*-awaiting-reply-*.md      # Reply-keyword state (expand/quote/cancel/extend), 30-day expiry
 ~/.briefings_config                    # MY_EMAIL, COMPANY_DOMAIN, LOOKBACK_DAYS
 ~/.briefings/decisions.jsonl           # Decision + commitment ledger (mode 600)
 ~/.briefings/decisions.db              # SQLite index, rebuilt on JSONL change
@@ -177,7 +177,18 @@ Each briefing draws on whichever of these sources have something relevant. Nothi
 
 ## Decision ledger and MCP server
 
-Every `/follow-up` writes the decisions and commitments it extracts to an append-only ledger at `~/.briefings/decisions.jsonl`. The next briefing for the same people uses that ledger to fill a `Delta:` section — what changed since the last touchpoint — so the SITREP that lands in your inbox already knows what's still open with this person and what was last decided. High-stakes entries get a numbered "Why?" prompt attached to the follow-up email; reply with `1: <reason>` and the scheduler folds your reason back into the ledger on its next 15-minute cycle.
+Every `/follow-up` writes the decisions and commitments it extracts to an append-only ledger at `~/.briefings/decisions.jsonl`. The next briefing for the same people uses that ledger to fill a `Delta:` section — what changed since the last touchpoint — so the SITREP that lands in your inbox already knows what's still open with this person and what was last decided. Historical entries from before Phase 2 may carry populated `why`/`why_notes` fields from the retired Why? capture loop; the briefing reads them naturally if present.
+
+### Reply keywords
+
+Every follow-up invites four reply keywords on its email thread. The scheduler polls each thread every 15 minutes via the `~/Briefings/*-awaiting-reply-*.md` state file written when the follow-up was sent.
+
+- `expand: <request>` — re-fetches the meeting transcript (Gemini Doc, Teams Recap, or local MacWhisper file) and runs Claude with your specific ask. Example: `expand: write up Mark's industry overview as a one-pager`. The result lands as a reply in the same email thread (and Slack channel if `~/.slack_webhook` is configured).
+- `quote: <topic>` — returns 3 to 6 direct quotes from the transcript where speakers discuss the topic. Useful for pulling out the actual lines someone said about a thing.
+- `cancel` — drops the reply thread for this meeting. The state file is deleted.
+- `extend` — resets the 30-day expiry clock. Use when you want to come back to a meeting weeks later.
+
+Each follow-up email ends with a one-line footer listing these keywords. Anything else replied to the thread gets a one-line "didn't recognize that keyword" response so you know the system saw your message.
 
 A local read-only MCP server (`briefings_mcp`) exposes the ledger to anything else that speaks MCP — Claude Desktop, Claude Code in unrelated projects, future MCP consumers — via three tools:
 
@@ -202,7 +213,7 @@ Every 15 minutes the scheduler does this in plain bash before touching Claude:
 1. Check gws OAuth token. If expired, notify Slack and exit
 2. Pull the next 2 hours of calendar events
 3. Decide whether any meeting needs a briefing (no briefing file on disk yet and starts within 2h) or a follow-up (ended in the last 2 days, no follow-up file yet)
-4. Check for any `*-awaiting-*.md` files indicating pending transcript or why-capture replies
+4. Check for any `*-awaiting-*.md` files indicating pending transcript or reply-keyword replies
 
 If nothing needs doing, it exits without invoking Claude. In practice this skips about 90% of runs, which keeps Claude usage predictable. When both a briefing and a follow-up are needed, it does one combined Claude call instead of two.
 
