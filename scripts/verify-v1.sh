@@ -40,13 +40,16 @@ warn()    { echo -e "  ${YELLOW}!${NC} $1"; }
 
 WITH_EMAIL=0
 WITH_BRIEFING=0
+WITH_FOLLOWUP=0
 for arg in "$@"; do
     case "$arg" in
         --with-email)    WITH_EMAIL=1 ;;
         --with-briefing) WITH_BRIEFING=1 ;;
+        --with-followup) WITH_FOLLOWUP=1 ;;
         --help|-h)
-            echo "Usage: $0 [--with-briefing] [--with-email]"
+            echo "Usage: $0 [--with-briefing] [--with-followup] [--with-email]"
             echo "  --with-briefing   Also force-regenerate the next briefing and assert SITREP shape"
+            echo "  --with-followup   Also force-regenerate the latest follow-up and assert Phase 1 shape"
             echo "  --with-email      Also send a manual follow-up reply test"
             exit 0
             ;;
@@ -412,6 +415,102 @@ BODY
 else
     section "9. Manual email test (skipped)"
     info "Re-run with --with-email to send a test follow-up to MY_EMAIL."
+fi
+
+# ── 10. Manual half: regenerate latest follow-up and assert Phase 1 shape ──
+# Gated by --with-followup because it requires a `claude -p` call (network +
+# API spend + 1–3 minutes). Mirrors --with-briefing pattern: pick the most
+# recent follow-up, force-regenerate the same meeting, then grep the output
+# for mandatory and conditional Phase 1 sections.
+if [ "$WITH_FOLLOWUP" -eq 1 ]; then
+    section "10. Manual: regenerate latest follow-up and assert shape"
+
+    if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
+        fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /follow-up"
+    else
+        # Pick the most recent follow-up file (skip awaiting/scheduler).
+        latest_fu=""
+        if compgen -G "$HOME/Briefings/*followup*.md" >/dev/null; then
+            latest_fu=$(ls -t "$HOME"/Briefings/*followup*.md 2>/dev/null \
+                | grep -vE 'awaiting|scheduler' | head -1 || true)
+        fi
+
+        if [ -z "$latest_fu" ] || [ ! -f "$latest_fu" ]; then
+            fail "Latest follow-up file" "no follow-up files in ~/Briefings/ — nothing to regenerate"
+        else
+            # Parse "# Follow-up: <Title>" from line 1. Skip if title contains a
+            # double-quote (would break the prompt arg quoting) — extremely rare.
+            meeting_title=$(head -1 "$latest_fu" | sed -E 's/^# Follow-up:[[:space:]]*//')
+            if [ -z "$meeting_title" ] || printf '%s' "$meeting_title" | grep -q '"'; then
+                fail "Parse meeting title" "first line of $(basename "$latest_fu") missing '# Follow-up: ' prefix or contains a quote"
+            else
+                before_mtime=$(stat -f '%m' "$latest_fu" 2>/dev/null \
+                    || stat -c '%Y' "$latest_fu" 2>/dev/null || echo 0)
+
+                info "Force-regenerating /follow-up for: $meeting_title"
+                info "  (this can take 1–3 minutes)"
+                claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+                    "/follow-up $meeting_title --force" \
+                    < /dev/null 2>&1) || true
+
+                current_mtime=$(stat -f '%m' "$latest_fu" 2>/dev/null \
+                    || stat -c '%Y' "$latest_fu" 2>/dev/null || echo 0)
+                if [ "$current_mtime" -le "$before_mtime" ]; then
+                    warn "Follow-up mtime unchanged — claude may have skipped regeneration."
+                    warn "  Asserting on existing file: $(basename "$latest_fu")"
+                else
+                    info "Fresh follow-up written: $(basename "$latest_fu")"
+                fi
+
+                # Mandatory shape — these always appear (punchy top + Step 5
+                # template requires them). Failure here means a real regression.
+                for spec in \
+                    "Title line:^# Follow-up:" \
+                    "Summary section:^## Summary" \
+                    "Action items section:^## Action items" \
+                    "Key decisions section:^## Key decisions"; do
+                    label="${spec%%:*}"
+                    pattern="${spec#*:}"
+                    if grep -qE "$pattern" "$latest_fu"; then
+                        pass "$label present"
+                    else
+                        fail "$label missing" "$(basename "$latest_fu")"
+                    fi
+                done
+
+                # Phase 1 conditional sections — each is genuinely conditional
+                # (internal meetings skip Counterparty read; a fully-resolved
+                # meeting has no Open questions; a transcript pasted inline has
+                # no Source). Report presence/absence; don't fail individually.
+                for spec in \
+                    "Notable threads:^## Notable threads" \
+                    "Open questions:^## Open questions" \
+                    "Counterparty read:^## Counterparty read" \
+                    "Source:^## Source"; do
+                    label="${spec%%:*}"
+                    pattern="${spec#*:}"
+                    if grep -qE "$pattern" "$latest_fu"; then
+                        info "$label present"
+                    else
+                        info "$label absent (may be expected — section is conditional)"
+                    fi
+                done
+
+                # Backstop: at least one Phase 1 section should appear in any
+                # real production follow-up. All four absent means extraction
+                # regressed or the file is stale (no regeneration happened).
+                if grep -qE '^## (Notable threads|Open questions|Counterparty read|Source)' "$latest_fu"; then
+                    pass "At least one Phase 1 conditional section appears"
+                else
+                    fail "All Phase 1 sections absent" \
+                        "Notable threads / Open questions / Counterparty read / Source all missing in $(basename "$latest_fu")"
+                fi
+            fi
+        fi
+    fi
+else
+    section "10. Manual follow-up test (skipped)"
+    info "Re-run with --with-followup to regenerate the latest follow-up and assert Phase 1 shape."
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────

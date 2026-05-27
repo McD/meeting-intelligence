@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-19 — adds explicit --force regenerate semantics for a specific meeting; ledger writes, why-prompt emails, awaiting-why state -->
+<!-- version: 2026-05-27 — Phase 1 richness upgrades: Notable threads, Source link, Counterparty read (ext/mixed only), inline confidence callouts on actions, hardened Open questions prompt. v1 (2026-05-19) added --force, ledger writes, why-prompt emails, awaiting-why state. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -139,6 +139,7 @@ For each transcript-awaiting file found:
      - Log `"Transcript request extended by user for [meeting] — expiry reset to 7 days from now"` to `~/Briefings/scheduler.log`
      - Skip this entry — do not generate a follow-up. The scheduler will keep polling the thread for a transcript reply on subsequent cycles, just for another 7 days.
    - Otherwise, the body text is the transcript:
+     - Set `$TRANSCRIPT_SOURCE` to the Gmail thread URL of the reply (e.g. `https://mail.google.com/mail/u/0/#inbox/<thread_id>`) so the `## Source` section in Step 5 can link back to the email containing the pasted transcript.
      - Proceed directly to **Step 3** (Read and extract) using this text as the transcript
      - Complete Steps 4 and 5 as normal, using the slug from the awaiting file for the output filename
      - After sending, delete the awaiting file
@@ -177,7 +178,17 @@ If no qualifying meetings exist, say so and stop.
 
 ## Step 2: Find the transcript
 
-For each meeting, search in order — stop as soon as you find a usable transcript:
+For each meeting, search in order — stop as soon as you find a usable transcript.
+
+**Capture two references as you go**, for the `## Source` section in Step 5:
+
+- `$TRANSCRIPT_SOURCE` — the most direct link to the transcript content. By branch:
+  - **A, B, D** → the Google Doc URL (e.g. `https://docs.google.com/document/d/<id>`)
+  - **C** → the Gmail thread URL of the Teams Meeting Recap (e.g. `https://mail.google.com/mail/u/0/#inbox/<threadId>`)
+  - **E** → an absolute `file://` path to the MacWhisper file (e.g. `file:///Users/.../Desktop/recording.txt`)
+- `$CALENDAR_EVENT_URL` — the calendar event's `htmlLink` field, captured when the event is fetched in Step 1 or branch A. Always available when the meeting came from the calendar.
+
+Leave `$TRANSCRIPT_SOURCE` empty if no concrete source link can be produced (rare; e.g. transcript pasted inline somewhere without a stable URL). Step 5 omits the Source section gracefully when both values are empty.
 
 **A) Calendar event attachments and description**
 - Fetch the full calendar event
@@ -259,7 +270,13 @@ Extract:
   - List **Mark's own actions first**
   - If no name is attached to an action, attribute it to the meeting organiser
   - Include ALL actions, not just Mark's
-- **Open questions** — anything unresolved that needs a follow-up
+  - **Confidence callouts** — when the transcript leaves the owner or scope genuinely ambiguous, mark the uncertainty inline. Use sparingly; do not hedge clean actions.
+    - **Unclear owner** — append `?` to the person's name: `**You?**`, `**Alice?**`, `**Organiser?**`. Trigger this only when the transcript does not assign a clear owner (e.g. "someone should send the recap").
+    - **Unclear scope** — append italic `*(scope?)*` at the end of the action text. Trigger when the action is vague enough that the person would not know what "done" looks like (e.g. "Mark to do something about the website" → `**You** — handle the website *(scope?)*`).
+    - When an action is unambiguous on both owner and scope, neither marker appears — this is the common case. A follow-up peppered with `?` marks signals a bad extraction, not a thorough one.
+- **Open questions** — any question raised in the meeting that did not get a definitive answer, or any topic explicitly flagged "for later", "TBD", "we'll come back to", "needs more thought", or similar. Include questions that arose during decisions even if those decisions still stand (e.g. "we'll launch in March" decided, but "how do we sequence with the partner team?" left open). **Do not** include items that were already captured as Action items — those are tracked separately. If every question raised in the meeting got an answer, return nothing here and the section is omitted.
+- **Notable threads** — 3 to 5 bullets capturing texture from the meeting that is not already covered by Summary, Action items, or Key decisions. Interesting framings, analogies, a striking line someone said, soft commitments ("you said you'd think about Z"), tangents worth remembering. **Do not** restate decisions or actions here — this section exists precisely because the punchy top loses the texture. **Ceiling: 5 bullets maximum.** If there are fewer than 3 genuinely notable moments, return fewer (or none) rather than padding. Each bullet should be one sentence, written in the third person where helpful (e.g. "Robert framed the legacy industry as 'selling 2010 hardware in 2026 packaging'").
+- **Counterparty read** — *(only when at least one attendee has an email outside `$COMPANY_DOMAIN` — i.e. external or mixed meetings; skip entirely for internal-only meetings)* — one or two sentences on what the people from outside `$COMPANY_DOMAIN` seemed to care about most, separate from agreed actions. Tone, emphasis, what they kept returning to, what they pushed back on. If counterparty signal was thin (e.g. they barely spoke), say so honestly — e.g. "Limited counterparty signal; meeting was largely a Mark monologue." Keep it short and observation-led, not interpretation-led.
 
 If the transcript is long, focus on the last 20% (actions cluster at the end) but scan the whole thing for anything explicitly flagged as an action.
 
@@ -359,16 +376,32 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 ## Action items
 - [ ] **You** — [your action] *(by [date] if stated)*
 - [ ] [Other person] — [their action]
+- [ ] **You?** — [action with unclear owner — see confidence callouts in Step 3]
+- [ ] **Alice** — [action with unclear scope] *(scope?)*
 
 ## Key decisions
 - [Decision made]
 - [Decision made]
 
+## Notable threads
+- [Texture bullet: framing, analogy, soft commitment, or memorable moment]
+- [Another, max 5 total]
+
 ## Open questions
 - [Unresolved item]
+
+## Counterparty read
+[1-2 sentence read on what the external attendees seemed to care about most]
+
+## Source
+- Transcript: [link or file path from $TRANSCRIPT_SOURCE]
+- Calendar: [link from $CALENDAR_EVENT_URL]
 ```
 
-Skip any section that has no content.
+Skip any section that has no content. Specifically:
+
+- **`## Counterparty read`** — render only when `is_external` (computed in Step 4) is `true` *and* Step 3 produced counterparty content. For internal-only meetings (`is_external: false`), omit this section unconditionally regardless of what Step 3 returned. This is belt-and-braces — Step 3's prompt already restricts extraction to external/mixed meetings, but the Step 5 check guarantees the section never leaks into internal follow-ups.
+- **`## Source`** — if both `$TRANSCRIPT_SOURCE` and `$CALENDAR_EVENT_URL` are empty, omit the section entirely. If only one is empty, render the section with just the non-empty entry. Format transcript links as plain markdown `[link or file path](url)` when the value is a URL; render `file://` paths verbatim (no surrounding link syntax) so they remain copy-pasteable on the same machine.
 
 **Why? section (high-stakes follow-ups only):** If Step 4 returned `high_stakes: true` *and* at least one entry has `ok: true`, append a final `## Why?` section to the file. Number the entries `1..N` over the successfully-appended entries only (in `results` order — so gaps from failed appends are renumbered away, not left as missing). Use this exact shape:
 
