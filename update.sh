@@ -1,7 +1,7 @@
 #!/bin/bash
 # meeting-intelligence — Update Script
 # Pulls the latest version from git, re-installs commands and scheduler.
-# version: 2026-05-19
+# version: 2026-05-27 — version detection now takes max date across briefing.md and follow-up.md
 #
 # Run from inside the cloned repo: bash update.sh
 
@@ -48,8 +48,20 @@ for f in commands/briefing.md commands/follow-up.md scripts/scheduler.sh; do
 done
 
 # ── Show version change ──────────────────────────────────────────────────────
-NEW_VERSION=$(grep -m1 'version:' "$SCRIPT_DIR/commands/briefing.md" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "unknown")
-OLD_VERSION=$(grep -m1 'version:' ~/.claude/commands/briefing.md 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "unknown")
+# The plugin "version" is the most recent date stamp across all command files —
+# /briefing or /follow-up may move independently, so take the max of both.
+extract_version() {
+    local briefing_md="$1/commands/briefing.md"
+    local followup_md="$1/commands/follow-up.md"
+    { grep -m1 'version:' "$briefing_md" 2>/dev/null; grep -m1 'version:' "$followup_md" 2>/dev/null; } \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+        | sort -r \
+        | head -1
+}
+NEW_VERSION=$(extract_version "$SCRIPT_DIR")
+NEW_VERSION=${NEW_VERSION:-unknown}
+OLD_VERSION=$(extract_version "$HOME/.claude")
+OLD_VERSION=${OLD_VERSION:-unknown}
 if [ "$NEW_VERSION" = "$OLD_VERSION" ] && [ "$OLD_VERSION" != "unknown" ]; then
     info "Already on latest version ($OLD_VERSION). Re-applying anyway."
 else
