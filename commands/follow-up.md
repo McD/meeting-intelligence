@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-27 Phase 4 — adds ## Pattern flags section between Counterparty read and Source (find_patterns scoped to this meeting's topics). Step 0 now has four branches (retirement / awaiting-reply / awaiting-digest / transcript-request). Previous: Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords; Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-05-27 Phase 4.1 — Step 6 HTML renderer now handles *italic* and numbered (1.) lists; same renderer is duplicated into commands/digest.md Step 5 so both emails render consistently. Phase 4 adds ## Pattern flags section. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -511,36 +511,50 @@ HTML=$(python3 << 'PYEOF'
 import re
 
 def inline(text):
+    # Bold first so that *italic* doesn't eat into ** delimiters.
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # Italic — single-asterisk-delimited. Negative lookarounds avoid ** delimiters
+    # and the start/end of pre-existing bold spans.
+    text = re.sub(r'(?<![\w*])\*([^*\n]+?)\*(?![\w*])', r'<i>\1</i>', text)
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
     return text
 
+def close_lists(out, state):
+    if state['ul']: out.append('</ul>'); state['ul'] = False
+    if state['ol']: out.append('</ol>'); state['ol'] = False
+
 lines = open('FOLLOWUP_FILE').read().split('\n')
 out = []
-in_list = False
+state = {'ul': False, 'ol': False}
 
 for line in lines:
     if line.startswith('# '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h2 style="margin:0 0 4px 0">{inline(line[2:])}</h2>')
     elif line.startswith('## '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{inline(line[3:])}</h3>')
     elif line.startswith('### '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h4 style="margin:12px 0 2px 0">{inline(line[4:])}</h4>')
     elif re.match(r'^\s*- ', line):
+        if state['ol']: out.append('</ol>'); state['ol'] = False
         content = re.sub(r'^\s*- ', '', line)
-        if not in_list: out.append('<ul style="margin:4px 0;padding-left:20px">'); in_list = True
+        if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
+        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
+    elif re.match(r'^\s*\d+\.\s+', line):
+        if state['ul']: out.append('</ul>'); state['ul'] = False
+        content = re.sub(r'^\s*\d+\.\s+', '', line)
+        if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
         out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
     elif line.strip() == '':
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append('<div style="margin:6px 0"></div>')
     else:
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<p style="margin:3px 0">{inline(line)}</p>')
 
-if in_list: out.append('</ul>')
+close_lists(out, state)
 print('\n'.join(out))
 PYEOF
 )
