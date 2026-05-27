@@ -57,6 +57,50 @@ Optional flags:
 - `--with-briefing` — force-regenerates the next upcoming meeting's briefing and asserts the SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed meetings). Costs a real `claude -p` call and a couple of minutes.
 - `--with-email` — sends a fixture follow-up email to your `MY_EMAIL` so you can exercise the why-capture reply path.
 
+## macOS permission setup
+
+The scheduler runs Claude Code headlessly, so it cannot answer macOS permission dialogs. Two one-time setup steps stop those dialogs from ever blocking a run.
+
+**1. Grant your terminal app the broad TCC permissions.** Child processes inherit TCC from their parent, so once Terminal (or iTerm, Ghostty, Warp) is approved, every future `claude` binary it spawns is too. In System Settings → Privacy & Security, add your terminal to:
+
+- Full Disk Access
+- App Management
+- Files and Folders
+
+Restart the terminal app after granting.
+
+**2. Auto-prune old Claude Code versions.** The native installer drops every prior version at `~/.local/share/claude/versions/<version>` (~200MB each) and never removes them. macOS keys TCC permissions to the binary file, so each leftover triggers fresh prompts after upgrades. A small script plus a SessionStart hook clears stale binaries automatically.
+
+Save to `~/.local/bin/claude-prune-versions` and `chmod +x`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+versions_dir="$HOME/.local/share/claude/versions"
+symlink="$HOME/.local/bin/claude"
+[[ -d "$versions_dir" ]] || exit 0
+[[ -L "$symlink" ]] || exit 0
+current="$(basename "$(readlink "$symlink")")"
+[[ -n "$current" ]] || exit 0
+find "$versions_dir" -maxdepth 1 -type f ! -name "$current" -delete 2>/dev/null || true
+```
+
+Then add a SessionStart hook to `~/.claude/settings.json` (merge into existing `hooks` if present):
+
+```json
+"hooks": {
+  "SessionStart": [
+    {
+      "hooks": [
+        { "type": "command", "command": "~/.local/bin/claude-prune-versions" }
+      ]
+    }
+  ]
+}
+```
+
+With both in place, the headless scheduler does not get blocked by permission prompts after Claude Code upgrades.
+
 ## Layout
 
 ```
@@ -176,7 +220,7 @@ Common issues:
 - **No briefings arriving**: confirm `launchctl list | grep briefings` shows the job, then check the log. If the log says "auth check failed", run `gws auth login`.
 - **gws auth keeps expiring**: gws uses bundled OAuth credentials. If your Workspace admin restricts third-party OAuth apps, you may need a custom client (out of scope here).
 - **"command not found: /briefing"**: close and reopen Claude Code so it picks up the newly-installed slash command.
-- **Briefings stopped after a Claude Code update**: Claude Code occasionally re-prompts for permissions after major updates, which the headless scheduler cannot answer. The scheduler detects version changes and posts a heads-up to Slack when this happens. If the log shows "Claude Code is asking for permission approval", open a terminal, run `claude` once, accept any prompts (in particular re-enabling `--dangerously-skip-permissions` if it asks), then briefings resume on the next 15-minute cycle.
+- **Briefings stopped after a Claude Code update**: Claude Code occasionally re-prompts for permissions after major updates, which the headless scheduler cannot answer. The scheduler detects version changes and posts a heads-up to Slack when this happens. If the log shows "Claude Code is asking for permission approval", open a terminal, run `claude` once, accept any prompts (in particular re-enabling `--dangerously-skip-permissions` if it asks), then briefings resume on the next 15-minute cycle. To stop this from happening in the first place, follow the macOS permission setup section above.
 
 ## License
 
