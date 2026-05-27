@@ -540,8 +540,10 @@ if [ "$WITH_DIGEST" -eq 1 ]; then
             done
 
             # Reply-keyword footer — at least the core four keywords should appear.
+            # Match the opening backtick + keyword; closing backtick may be after
+            # an example argument (e.g. `done: 1, 3`), so don't require it.
             for kw in 'done:' 'more:' 'drop:' 'cancel'; do
-                if grep -qF "\`$kw\`" "$DIGEST_FILE"; then
+                if grep -qF "\`$kw" "$DIGEST_FILE"; then
                     pass "Footer keyword \`$kw\` present"
                 else
                     fail "Footer keyword \`$kw\` missing" "$(basename "$DIGEST_FILE")"
