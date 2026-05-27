@@ -2,10 +2,15 @@
 
 Per R1, the ledger lives at ~/.briefings/decisions.jsonl with mode 600 inside a 700 directory.
 The MCP server (U4) is the read path for external agents; commands/briefing.md reads the JSONL
-inline; commands/follow-up.md is the sole writer. v1 is single-writer, so no locking.
+inline; commands/follow-up.md is the sole writer for new entries. v1 is single-writer, so no
+locking.
 
-Writes are append-only. Phase 2 removed `update_why`, the one historical rewrite path, when the
-Why? capture loop was retired — the ledger is now truly append-only.
+Writes are mostly append-only. Phase 2 removed `update_why` when the Why? capture loop was
+retired. Phase 3 deliberately walks that back for one specific field: `update_commitment_state`
+mutates a commitment entry's `state` so the actions tracker digest's reply-keyword updates
+(`done:`, `drop:`) can persist. All other fields remain append-only. The atomic-rewrite shape
+(tmp file + os.replace) is safe under the single-writer guarantee; supersede-event alternatives
+push reconciliation into every reader for negligible gain.
 """
 
 from __future__ import annotations
@@ -62,6 +67,67 @@ def append(entry: dict) -> None:
         f.write(line)
         f.flush()
         os.fsync(f.fileno())
+
+
+def update_commitment_state(entry_id: str, new_state: str) -> bool:
+    """Mutate one commitment entry's `state` field in place.
+
+    Used by the actions tracker digest's reply-keyword flow (Phase 3 / `done:`, `drop:`). Only
+    commitment entries are mutable; decision entries (and any other future types) are rejected.
+    Returns True on a successful update, False when no entry matched the id (the ledger file is
+    left untouched in that case).
+
+    The whole file is rewritten atomically via a tmp file in the same directory plus os.replace.
+    Safe under the single-writer guarantee documented in the module docstring. See `append` for
+    the append-only contract for all other fields.
+
+    Raises schema.SchemaError when `new_state` is not in COMMITMENT_STATES, or when the matched
+    entry's type is not "commitment". Raises FileNotFoundError when the ledger file does not yet
+    exist (caller should not be asking for updates against a ledger that has never been written).
+    """
+    if new_state not in schema.COMMITMENT_STATES:
+        raise schema.SchemaError(
+            f"new_state {new_state!r} not in {sorted(schema.COMMITMENT_STATES)}"
+        )
+    if not LEDGER_PATH.exists():
+        raise FileNotFoundError(LEDGER_PATH)
+
+    matched = False
+    lines_out: list[str] = []
+    with open(LEDGER_PATH, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            stripped = raw_line.strip()
+            if not stripped:
+                lines_out.append(raw_line)
+                continue
+            entry = json.loads(stripped)
+            if entry.get("id") == entry_id:
+                if entry.get("type") != "commitment":
+                    raise schema.SchemaError(
+                        f"entry {entry_id!r} is type {entry.get('type')!r}, expected 'commitment'"
+                    )
+                matched = True
+                entry["state"] = new_state
+                lines_out.append(
+                    json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+            else:
+                # Preserve untouched entries byte-for-byte so a state update doesn't reformat
+                # the rest of the ledger.
+                lines_out.append(raw_line if raw_line.endswith("\n") else raw_line + "\n")
+
+    if not matched:
+        return False
+
+    tmp_path = LEDGER_PATH.with_suffix(".jsonl.tmp")
+    with _restricted_umask():
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(lines_out)
+            f.flush()
+            os.fsync(f.fileno())
+    os.chmod(tmp_path, _FILE_MODE)
+    os.replace(tmp_path, LEDGER_PATH)
+    return True
 
 
 def iter_entries(since: date | None = None) -> Iterator[dict]:

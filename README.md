@@ -8,8 +8,9 @@ The thing that makes the briefings actually useful is the cross-source context. 
 
 ## What you get
 
-- `/briefing` and `/follow-up` slash commands inside Claude Code
+- `/briefing`, `/follow-up`, and `/digest` slash commands inside Claude Code
 - A `scheduler.sh` that runs every 15 minutes via launchd and decides whether there's any work to do before invoking Claude (skips about 90% of cycles)
+- Twice-weekly actions tracker digest (Mon and Thu at 10am local) of your open commitments with reply-keyword updates
 - Multi-source context: Gmail, Drive, Slack, prior call transcripts
 - Email and Slack delivery
 - Idempotent installer that's safe to re-run
@@ -112,7 +113,8 @@ meeting-intelligence/
 │   └── plugin.json         # Plugin manifest
 ├── commands/
 │   ├── briefing.md         # /briefing slash command
-│   └── follow-up.md        # /follow-up slash command
+│   ├── follow-up.md        # /follow-up slash command
+│   └── digest.md           # /digest slash command (Phase 3 actions tracker)
 ├── briefings_mcp/          # Local MCP server + ledger module (Python)
 ├── scripts/
 │   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
@@ -125,11 +127,14 @@ After install, files land here:
 ```
 ~/.claude/commands/briefing.md         # Copy of the slash command
 ~/.claude/commands/follow-up.md
+~/.claude/commands/digest.md
 ~/Briefings/scheduler.sh
 ~/Briefings/scheduler.log              # Rolling log, capped at 500KB
 ~/Briefings/YYYY-MM-DD-HHmm-*.md       # One briefing per meeting
 ~/Briefings/YYYY-MM-DD-HHmm-followup-*.md
-~/Briefings/*-awaiting-reply-*.md      # Reply-keyword state (expand/quote/cancel/extend), 30-day expiry
+~/Briefings/YYYY-MM-DD-1000-digest.md  # Twice-weekly actions tracker (Mon/Thu)
+~/Briefings/*-awaiting-reply-*.md      # Per-meeting reply-keyword state (expand/quote/cancel/extend)
+~/Briefings/*-awaiting-digest-*.md     # Per-digest reply-keyword state (done/more/drop/send/cancel/extend)
 ~/.briefings_config                    # MY_EMAIL, COMPANY_DOMAIN, LOOKBACK_DAYS
 ~/.briefings/decisions.jsonl           # Decision + commitment ledger (mode 600)
 ~/.briefings/decisions.db              # SQLite index, rebuilt on JSONL change
@@ -200,6 +205,35 @@ The server runs from a dedicated Python venv at `~/.briefings/venv` and is regis
 
 The briefing itself reads the ledger inline (no MCP roundtrip on the hot path); the MCP server is purely the read path for external agents.
 
+## Actions tracker
+
+Twice a week — Monday and Thursday at 10am local — the scheduler fires `/digest`, which reads open commitments from the ledger and delivers an actions tracker email plus a one-line Slack heads-up. The cadence is hardcoded; the digest file is named `~/Briefings/YYYY-MM-DD-1000-digest.md` and the scheduler uses its presence as the idempotency check, so re-firing within the same day is a no-op.
+
+The digest has up to three sections:
+
+- **Yours** — open commitments where the owner is you (matched by `MY_EMAIL`, "You", "Mark", or "Mark McDermott", case-insensitive). Each item shows meeting name, age in days, and any due date.
+- **Owed to you** — open commitments from your meetings where the owner is someone else. Useful for nudging.
+- **Nudge drafts** — pre-written 2 to 3 sentence reminder emails for any Owed-to-you item older than 14 days or past its due date. Each draft is numbered for `send: N` reply triggering.
+
+Each Yours item may also carry a `done?` confidence hint if smart pre-marking found a likely match in your Gmail sent items (best-effort, Gmail-only; gracefully skips on error).
+
+### Reply keywords
+
+Reply to the digest email to update commitment state. The scheduler picks up replies every 15 minutes via a `~/Briefings/YYYY-MM-DD-1000-awaiting-digest.md` state file.
+
+- `done: 1, 3` — mark Yours items 1 and 3 as `state: "done"` in the ledger
+- `more: 2` — keep Yours item 2 open, snooze to next digest (no state change, just logged)
+- `drop: 4` — mark Yours item 4 as `state: "dropped"`
+- `send: 2` — fire Nudge draft 2 to its recipient via Gmail
+- `cancel` — drop the awaiting-digest thread (state file deleted, no further polling)
+- `extend` — reset the 30-day expiry clock on the awaiting-digest state file
+
+Each successful update gets a one-line acknowledgment reply in the same thread. Unrecognized replies get a one-line "didn't recognize that — try `done:`, `more:`, `drop:`, `send:`, `cancel`, or `extend`" response.
+
+If the ledger has no open commitments on a Mon or Thu, the digest skips the email entirely and posts a single Slack notice ("Actions tracker: nothing open — clean slate for the week ahead."). No empty email lands in your inbox.
+
+To disable the digest, either comment out the `NEED_DIGEST` gate in `scripts/scheduler.sh` (around line 179) or delete `~/.claude/commands/digest.md` — the scheduler falls through to existing briefing and follow-up logic without it.
+
 ## How meetings get classified
 
 - **Internal**: every attendee has an `@COMPANY_DOMAIN` address
@@ -213,9 +247,10 @@ Every 15 minutes the scheduler does this in plain bash before touching Claude:
 1. Check gws OAuth token. If expired, notify Slack and exit
 2. Pull the next 2 hours of calendar events
 3. Decide whether any meeting needs a briefing (no briefing file on disk yet and starts within 2h) or a follow-up (ended in the last 2 days, no follow-up file yet)
-4. Check for any `*-awaiting-*.md` files indicating pending transcript or reply-keyword replies
+4. Check for any `*-awaiting-*.md` files indicating pending transcript, reply-keyword, or digest-reply replies
+5. Check if it's Monday or Thursday between 10:00 and 10:14 local time and today's digest file does not yet exist
 
-If nothing needs doing, it exits without invoking Claude. In practice this skips about 90% of runs, which keeps Claude usage predictable. When both a briefing and a follow-up are needed, it does one combined Claude call instead of two.
+If nothing needs doing, it exits without invoking Claude. In practice this skips about 90% of runs, which keeps Claude usage predictable. When multiple tasks are pending (e.g. a briefing AND a follow-up AND the Mon/Thu digest), the scheduler runs them in sequence within a single Claude invocation to keep the token budget tight.
 
 ## Troubleshooting
 

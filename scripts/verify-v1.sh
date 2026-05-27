@@ -42,14 +42,17 @@ warn()    { echo -e "  ${YELLOW}!${NC} $1"; }
 
 WITH_BRIEFING=0
 WITH_FOLLOWUP=0
+WITH_DIGEST=0
 for arg in "$@"; do
     case "$arg" in
         --with-briefing) WITH_BRIEFING=1 ;;
         --with-followup) WITH_FOLLOWUP=1 ;;
+        --with-digest)   WITH_DIGEST=1 ;;
         --help|-h)
-            echo "Usage: $0 [--with-briefing] [--with-followup]"
+            echo "Usage: $0 [--with-briefing] [--with-followup] [--with-digest]"
             echo "  --with-briefing   Also force-regenerate the next briefing and assert SITREP shape"
             echo "  --with-followup   Also force-regenerate the latest follow-up and assert Phase 1 shape"
+            echo "  --with-digest     Also force-generate today's digest and assert Phase 3 shape"
             exit 0
             ;;
         *) warn "Unknown arg: $arg" ;;
@@ -272,13 +275,27 @@ else
     fail "MCP-query roundtrip" "no Python venv available"
 fi
 
-# ── 7. Manual half: generate a real briefing and assert SITREP shape ────────
+# ── 7. U3p3 smoke test (commitment state mutator) ───────────────────────────
+section "7. U3p3 smoke test (commitment state mutator)"
+
+if [ -n "$TEST_PY" ]; then
+    if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_u3p3.py" >/tmp/u3p3_smoke.out 2>&1; then
+        pass "smoke_test_u3p3.py — all assertions pass"
+    else
+        fail "smoke_test_u3p3.py" "see /tmp/u3p3_smoke.out"
+        tail -20 /tmp/u3p3_smoke.out | sed 's/^/      /'
+    fi
+else
+    fail "smoke_test_u3p3.py" "no Python venv available"
+fi
+
+# ── 8. Manual half: generate a real briefing and assert SITREP shape ────────
 # Gated by --with-briefing because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes) and a calendar with an upcoming meeting in the
 # next 2 hours. The automated half above can't cover this because briefings
 # are Claude-generated.
 if [ "$WITH_BRIEFING" -eq 1 ]; then
-    section "7. Manual: regenerate next briefing and assert SITREP shape"
+    section "8. Manual: regenerate next briefing and assert SITREP shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /briefing"
@@ -363,17 +380,17 @@ if [ "$WITH_BRIEFING" -eq 1 ]; then
         fi
     fi
 else
-    section "7. Manual briefing test (skipped)"
+    section "8. Manual briefing test (skipped)"
     info "Re-run with --with-briefing to regenerate the next briefing and assert SITREP shape."
 fi
 
-# ── 8. Manual half: regenerate latest follow-up and assert Phase 1 shape ────
+# ── 9. Manual half: regenerate latest follow-up and assert Phase 1 shape ────
 # Gated by --with-followup because it requires a `claude -p` call (network +
 # API spend + 1–3 minutes). Mirrors --with-briefing pattern: pick the most
 # recent follow-up, force-regenerate the same meeting, then grep the output
 # for mandatory and conditional Phase 1 sections.
 if [ "$WITH_FOLLOWUP" -eq 1 ]; then
-    section "8. Manual: regenerate latest follow-up and assert shape"
+    section "9. Manual: regenerate latest follow-up and assert shape"
 
     if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
         fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /follow-up"
@@ -459,8 +476,90 @@ if [ "$WITH_FOLLOWUP" -eq 1 ]; then
         fi
     fi
 else
-    section "8. Manual follow-up test (skipped)"
+    section "9. Manual follow-up test (skipped)"
     info "Re-run with --with-followup to regenerate the latest follow-up and assert Phase 1 shape."
+fi
+
+# ── 10. Manual half: generate today's digest and assert Phase 3 shape ───────
+# Gated by --with-digest. Force-generates today's digest by invoking /digest
+# directly (bypasses the scheduler's Mon/Thu 10am gate). The digest file is
+# named ~/Briefings/$(date +%Y-%m-%d)-1000-digest.md; this section deletes any
+# existing file at that path before invoking /digest so the regeneration runs
+# fresh.
+if [ "$WITH_DIGEST" -eq 1 ]; then
+    section "10. Manual: generate today's digest and assert shape"
+
+    if ! command -v claude >/dev/null 2>&1 && [ ! -x "$CLAUDE_BIN" ]; then
+        fail "claude CLI" "not found at $CLAUDE_BIN — cannot run /digest"
+    else
+        TODAY=$(date +%Y-%m-%d)
+        DIGEST_FILE="$HOME/Briefings/${TODAY}-1000-digest.md"
+        AWAITING_FILE="$HOME/Briefings/${TODAY}-1000-awaiting-digest.md"
+
+        # Clear any prior file so /digest doesn't no-op out via its idempotency check.
+        rm -f "$DIGEST_FILE" "$AWAITING_FILE"
+
+        info "Force-generating /digest for $TODAY..."
+        info "  (this can take 1–3 minutes)"
+        claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            "/digest" \
+            < /dev/null 2>&1) || true
+
+        if [ ! -f "$DIGEST_FILE" ]; then
+            # Could be the "nothing open" branch (no email, no digest file).
+            # Report as info, not fail, since that's a valid outcome.
+            info "No digest file generated — likely no open commitments in the ledger."
+            info "  Check ~/Briefings/scheduler.log for the Slack 'nothing open' notice."
+        else
+            info "Fresh digest written: $(basename "$DIGEST_FILE")"
+
+            # Mandatory shape.
+            for spec in \
+                "Title line:^# Actions tracker" \
+                "Yours section:^## Yours"; do
+                label="${spec%%:*}"
+                pattern="${spec#*:}"
+                if grep -qE "$pattern" "$DIGEST_FILE"; then
+                    pass "$label present"
+                else
+                    fail "$label missing" "$(basename "$DIGEST_FILE")"
+                fi
+            done
+
+            # Conditional sections — report presence/absence as info.
+            for spec in \
+                "Owed to you:^## Owed to you" \
+                "Nudge drafts:^## Nudge drafts"; do
+                label="${spec%%:*}"
+                pattern="${spec#*:}"
+                if grep -qE "$pattern" "$DIGEST_FILE"; then
+                    info "$label present"
+                else
+                    info "$label absent (may be expected — section is conditional)"
+                fi
+            done
+
+            # Reply-keyword footer — at least the core four keywords should appear.
+            for kw in 'done:' 'more:' 'drop:' 'cancel'; do
+                if grep -qF "\`$kw\`" "$DIGEST_FILE"; then
+                    pass "Footer keyword \`$kw\` present"
+                else
+                    fail "Footer keyword \`$kw\` missing" "$(basename "$DIGEST_FILE")"
+                fi
+            done
+
+            # Awaiting-digest state file should exist alongside the digest.
+            if [ -f "$AWAITING_FILE" ]; then
+                pass "Awaiting-digest state file present"
+            else
+                # Acceptable if THREAD_ID was empty (rare); report as info.
+                info "Awaiting-digest state file absent — check scheduler.log for THREAD_ID warning."
+            fi
+        fi
+    fi
+else
+    section "10. Manual digest test (skipped)"
+    info "Re-run with --with-digest to force-generate today's digest and assert Phase 3 shape."
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
 fi
 
 # ── Required sidecar files ───────────────────────────────────────────────────
-for f in commands/briefing.md commands/follow-up.md scripts/scheduler.sh; do
+for f in commands/briefing.md commands/follow-up.md commands/digest.md scripts/scheduler.sh; do
     [ -f "$SCRIPT_DIR/$f" ] || fail "Missing required file: $f (run install.sh from the cloned repo)"
 done
 
@@ -190,7 +190,8 @@ mkdir -p ~/.claude/commands
 
 cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
 cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
-ok "/briefing and /follow-up installed."
+cp "$SCRIPT_DIR/commands/digest.md"    ~/.claude/commands/digest.md
+ok "/briefing, /follow-up, and /digest installed."
 
 echo ""
 echo -e "${YELLOW}Note:${NC} If you have Claude Code open in another window, close and"

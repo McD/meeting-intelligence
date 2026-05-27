@@ -1,7 +1,7 @@
 #!/bin/bash
 # meeting-intelligence — Update Script
 # Pulls the latest version from git, re-installs commands and scheduler.
-# version: 2026-05-27 — version detection now takes max date across briefing.md and follow-up.md
+# version: 2026-05-27 Phase 3 — registers commands/digest.md alongside briefing.md and follow-up.md; version detection takes max date across all three.
 #
 # Run from inside the cloned repo: bash update.sh
 
@@ -43,7 +43,7 @@ else
 fi
 
 # ── Check sidecar files exist ────────────────────────────────────────────────
-for f in commands/briefing.md commands/follow-up.md scripts/scheduler.sh; do
+for f in commands/briefing.md commands/follow-up.md commands/digest.md scripts/scheduler.sh; do
     [ -f "$SCRIPT_DIR/$f" ] || fail "Missing required file: $f"
 done
 
@@ -53,7 +53,10 @@ done
 extract_version() {
     local briefing_md="$1/commands/briefing.md"
     local followup_md="$1/commands/follow-up.md"
-    { grep -m1 'version:' "$briefing_md" 2>/dev/null; grep -m1 'version:' "$followup_md" 2>/dev/null; } \
+    local digest_md="$1/commands/digest.md"
+    { grep -m1 'version:' "$briefing_md" 2>/dev/null; \
+      grep -m1 'version:' "$followup_md" 2>/dev/null; \
+      grep -m1 'version:' "$digest_md"   2>/dev/null; } \
         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' \
         | sort -r \
         | head -1
@@ -72,7 +75,8 @@ fi
 mkdir -p ~/.claude/commands
 cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
 cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
-ok "briefing.md and follow-up.md updated."
+cp "$SCRIPT_DIR/commands/digest.md"    ~/.claude/commands/digest.md
+ok "briefing.md, follow-up.md, and digest.md updated."
 
 # ── Re-install scheduler ─────────────────────────────────────────────────────
 mkdir -p ~/Briefings

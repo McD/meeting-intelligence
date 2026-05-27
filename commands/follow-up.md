@@ -34,11 +34,12 @@ Force mode is the right path when a transcript appeared late, when ledger writes
 
 Before anything else, scan `~/Briefings/` for files matching `*-awaiting-*.md`.
 
-**Dispatch by filename.** The single glob covers three state-file shapes. Inspect each match's basename:
+**Dispatch by filename.** The single glob covers four state-file shapes. Inspect each match's basename:
 
 - If the basename contains `-awaiting-why-` → **Retirement branch** below. These are Phase 1 artifacts from the now-removed Why? capture loop; log once and delete.
 - If the basename contains `-awaiting-reply-` → **Awaiting-reply branch** below (Phase 2 reply-keyword handler).
-- Otherwise (basename contains `-awaiting-` but neither sub-prefix) → **Transcript-request branch** below (unchanged from v1).
+- If the basename contains `-awaiting-digest-` → **Awaiting-digest branch** below (Phase 3 actions-tracker reply-keyword handler).
+- Otherwise (basename contains `-awaiting-` but none of the sub-prefixes above) → **Transcript-request branch** below (unchanged from v1).
 
 Process every awaiting file before falling through to Step 1.
 
@@ -121,6 +122,61 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 - Keyword matching is case-insensitive on the prefix (`Expand:`, `EXPAND:`, and `expand:` all match) but case-preserving on the argument.
 - A reply containing only the keyword with no argument (`expand:` alone or `quote:` alone) should respond with: `"Specify what to <expand|quote>: e.g. \`<keyword>: <something>\`."` — same one-line-reply pattern as the unrecognized branch.
 - The `expand:` and `quote:` handlers should NOT write anything to the ledger. The ledger is for decisions and commitments extracted at follow-up time; reply-driven outputs are conversational and ephemeral. The output email itself is the artifact.
+
+---
+
+### Awaiting-digest branch
+
+These state files were written by Step 6 of a `/digest` run (Phase 3). Each one points at the Gmail thread of the original actions tracker email and lists the ledger UUIDs and pre-drafted nudges that the user's reply keywords address.
+
+1. Read the file — flat frontmatter, one key per line:
+   - `thread_id:` — Gmail thread ID of the digest email
+   - `created_at:` — ISO timestamp when the digest was sent
+   - `mine:` — JSON array of ledger entry UUIDs in display order (the "Yours" section); indexed 1-based by reply keywords `done:`, `more:`, `drop:`
+   - `owed:` — JSON array of ledger entry UUIDs in display order (the "Owed to you" section); indexed 1-based by `done:`/`more:`/`drop:` is **not** valid here (those keywords are Yours-only)
+   - `nudges:` — JSON array of `{to, subject, body}` records in display order (the "Nudge drafts" section); indexed 1-based by reply keyword `send:`
+
+2. **Check expiry**: if `created_at` is more than 30 days ago, delete the awaiting-digest file, log `"Awaiting-digest expired — no reply within 30 days for $(basename file)"`, skip.
+
+3. **Check Gmail thread for a reply** using the stored `thread_id`:
+   ```bash
+   gws gmail users threads get --params '{"userId": "me", "id": "[thread_id]"}'
+   ```
+   If only 1 message in thread, skip (no reply yet).
+
+4. **If a reply is found**, read the last message body via `gws gmail +read --message-id "[id]"`.
+
+5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines). Lowercase the keyword prefix; preserve case in any argument that follows. Match against:
+
+   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop).
+
+   - `extend` / `wait` / `more time` → rewrite the state file with `created_at: <now>`, all other fields unchanged. Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
+
+   - `done: N[, M, ...]` — for each index N (1-based), look up `mine[N-1]` (the UUID). Call `briefings_mcp.ledger.update_commitment_state(uuid, "done")` for each. Then send one ack reply summarising the changes:
+     ```
+     Marked done:
+     - <summary of mine[N-1]>
+     - <summary of mine[M-1]>
+     ```
+     If an index is out of range, include a line: `Couldn't find item N — only X in this digest.` and continue with the in-range indices.
+
+   - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack `"Dropped: ..."`.
+
+   - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
+
+   - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). Send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`. Ack to the digest thread: `"Nudge sent to <to>."` If send fails, ack: `"Couldn't send nudge #N: <error>"`.
+
+   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
+
+6. **Leave the state file in place** after `done:`, `more:`, `drop:`, `send:`, or `extend` so further replies on the same thread are still processed. Only `cancel` and the 30-day expiry delete it.
+
+7. Process every awaiting-digest file before falling through to Step 1.
+
+**Implementation notes:**
+- The Python heredoc that wraps `update_commitment_state` should mirror the existing scheduler.sh:81 pattern: pass UUIDs via env var, call the function, emit JSON status.
+- Multiple keywords on separate lines (`done: 1\nmore: 2`) — only the FIRST keyword line is processed on this cycle, same as the awaiting-reply branch. User can re-reply with the rest.
+- Acks always go to the digest thread (`gws gmail +send --thread-id "$thread_id" --html`).
+- If `gws gmail +send` fails for the ack itself, log to scheduler.log and continue — the state changes already landed in the ledger; the missing ack is a degraded user experience, not data loss.
 
 ---
 

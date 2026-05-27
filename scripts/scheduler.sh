@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-19 — extracted notify_slack/log helpers, dropped redundant gmail probe.
+# version: 2026-05-27 Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local). Previous: 2026-05-19 — extracted notify_slack/log helpers, dropped redundant gmail probe.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -76,6 +76,7 @@ fi
 
 NEED_BRIEFING=0
 NEED_FOLLOWUP=0
+NEED_DIGEST=0
 
 if echo "$CAL_EVENTS" | grep -q '"items"'; then
     GATE_OUTPUT=$(CAL_DATA="$CAL_EVENTS" python3 <<'PYEOF'
@@ -175,7 +176,18 @@ if ls "$BRIEFING_DIR"/*-awaiting-*.md >/dev/null 2>&1; then
     NEED_FOLLOWUP=1
 fi
 
-if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ]; then
+# === Actions tracker digest gate (Phase 3) ===
+# Mon and Thu at 10:00-10:14 local, exactly once per day (idempotent against today's digest file).
+DOW=$(date +%u)   # 1=Mon, 4=Thu
+HHMM=$(date +%H:%M)
+TODAY=$(date +%Y-%m-%d)
+if { [ "$DOW" = "1" ] || [ "$DOW" = "4" ]; } \
+   && [[ "$HHMM" > "09:59" ]] && [[ "$HHMM" < "10:15" ]] \
+   && [ ! -f "$BRIEFING_DIR/${TODAY}-1000-digest.md" ]; then
+    NEED_DIGEST=1
+fi
+
+if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" = "0" ]; then
     log "Pre-flight: nothing to do, skipped Claude."
     exit 0
 fi
@@ -200,12 +212,18 @@ run_claude() {
     fi
 }
 
-if [ "$NEED_BRIEFING" = "1" ] && [ "$NEED_FOLLOWUP" = "1" ]; then
-    run_claude "briefing+follow-up" "Run /briefing all, then run /follow-up all. Both commands have their own internal checks and will skip cleanly if nothing applies."
-elif [ "$NEED_BRIEFING" = "1" ]; then
-    run_claude "briefing" "Run /briefing all"
-elif [ "$NEED_FOLLOWUP" = "1" ]; then
-    run_claude "follow-up" "Run /follow-up all"
+# Combined dispatch — Claude executes commands sequentially within a single invocation when
+# multiple flags fire. Each command has its own internal checks and will skip cleanly if
+# nothing applies, so over-firing is safe (just wastes a small amount of token budget).
+COMMANDS=()
+[ "$NEED_BRIEFING" = "1" ] && COMMANDS+=("/briefing all")
+[ "$NEED_FOLLOWUP" = "1" ] && COMMANDS+=("/follow-up all")
+[ "$NEED_DIGEST" = "1" ]   && COMMANDS+=("/digest")
+
+if [ "${#COMMANDS[@]}" -gt 0 ]; then
+    label=$(IFS='+'; echo "${COMMANDS[*]}" | sed 's| all||g; s|/||g')
+    prompt=$(IFS=$'\n'; printf 'Run these in sequence:\n%s\n\nEach command has its own internal checks and will skip cleanly if nothing applies.' "${COMMANDS[*]}")
+    run_claude "$label" "$prompt"
 fi
 
 log "Done."
