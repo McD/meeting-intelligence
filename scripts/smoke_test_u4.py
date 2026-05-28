@@ -73,7 +73,7 @@ def _make_commitment(summary: str, attendees: list[str], topics: list[str], stat
         "source_meeting": f"meeting-{summary[:20]}",
         "why": "",
         "why_notes": "",
-        "owner": attendees[0] if attendees else "mark@screencloud.io",
+        "owner": attendees[0] if attendees else "you@example.com",
         "due": _now_iso(7),
         "state": state,
     }
@@ -108,9 +108,9 @@ def main() -> int:
         section("AE6: append five pricing entries; topic + type filters")
         index_module.reset_cache()
         entries = [
-            _make_decision("Acme pricing memo finalised", ["alice@acme.com", "mark@screencloud.io"], ["pricing", "acme"], days_ago=10),
-            _make_decision("Acme tier pricing approved",  ["bob@acme.com",   "mark@screencloud.io"], ["pricing"],         days_ago=8),
-            _make_commitment("Send pricing draft to Acme", ["mark@screencloud.io"],                  ["pricing"],         state="open",     days_ago=6),
+            _make_decision("Acme pricing memo finalised", ["alice@acme.com", "you@example.com"], ["pricing", "acme"], days_ago=10),
+            _make_decision("Acme tier pricing approved",  ["bob@acme.com",   "you@example.com"], ["pricing"],         days_ago=8),
+            _make_commitment("Send pricing draft to Acme", ["you@example.com"],                  ["pricing"],         state="open",     days_ago=6),
             _make_commitment("Follow up on pricing call",  ["alice@acme.com"],                       ["pricing"],         state="in-flight", days_ago=4),
             _make_commitment("Close pricing thread",       ["alice@acme.com"],                       ["pricing", "close"], state="done",    days_ago=2),
         ]
@@ -137,7 +137,7 @@ def main() -> int:
         counts = {a["attendee"]: a["entry_count"] for a in attendees}
         check("alice@acme.com appears", "alice@acme.com" in counts, f"counts={counts}")
         check("alice has 3 entries", counts.get("alice@acme.com") == 3, f"got {counts.get('alice@acme.com')}")
-        check("mark has 3 entries", counts.get("mark@screencloud.io") == 3, f"got {counts.get('mark@screencloud.io')}")
+        check("owner has 3 entries", counts.get("you@example.com") == 3, f"got {counts.get('you@example.com')}")
         check(
             "ordering is by entry_count desc",
             all(attendees[i]["entry_count"] >= attendees[i + 1]["entry_count"] for i in range(len(attendees) - 1)),

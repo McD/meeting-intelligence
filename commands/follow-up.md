@@ -61,6 +61,8 @@ That's the entire branch. No Gmail fetch, no parsing, no ledger writes.
 
 These state files were written by Step 6 of a prior follow-up run. Each one points at the Gmail thread of the original follow-up email and at the meeting's transcript source, so the user's reply can be turned into a follow-up action.
 
+**Canonical classifier:** Steps 4 in both this branch and the awaiting-digest branch perform a watermark + From-header check before any keyword action. The pure-function reference implementation lives at `briefings_mcp/replies.py` (`parse_from_address`, `classify_message`) and is exercised by `scripts/smoke_test_dedup.py`. The prose below is what Claude Code follows at runtime; it must stay in sync with the code. If you change the rules here, change them there too (and add a smoke-test row).
+
 1. Read the file — flat frontmatter, one key per line:
    - `thread_id:` — Gmail thread ID of the original follow-up email
    - `meeting:` — meeting name

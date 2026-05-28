@@ -161,6 +161,20 @@ else
     fail "smoke_test_u4.py" "no Python venv available"
 fi
 
+# ── 4b. Reply-dedup classifier (watermark + From-header guards) ─────────────
+section "4b. Reply-dedup classifier (briefings_mcp.replies)"
+
+if [ -n "$TEST_PY" ]; then
+    if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_dedup.py" >/tmp/dedup_smoke.out 2>&1; then
+        pass "smoke_test_dedup.py — From-header parsing + classify_message all branches"
+    else
+        fail "smoke_test_dedup.py" "see /tmp/dedup_smoke.out"
+        tail -20 /tmp/dedup_smoke.out | sed 's/^/      /'
+    fi
+else
+    fail "smoke_test_dedup.py" "no Python venv available"
+fi
+
 # ── 5. U4 stdio boot test (FastMCP JSON-RPC protocol cleanliness) ───────────
 section "5. U4 stdio boot test (MCP protocol stays clean)"
 
@@ -214,7 +228,7 @@ def make_entry(kind: str, summary: str, attendees: list, topics: list, **extra) 
         "why_notes": "",
     }
     if kind == "commitment":
-        base.setdefault("owner", attendees[0] if attendees else "mark@screencloud.io")
+        base.setdefault("owner", attendees[0] if attendees else "you@example.com")
         base.setdefault("due", None)
         base.setdefault("state", "open")
     else:
