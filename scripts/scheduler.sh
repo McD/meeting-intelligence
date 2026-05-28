@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-28b — detects `timeout`/`gtimeout` at script start instead of assuming GNU coreutils; falls back to unbounded runs with a one-time Slack warning when neither binary is on PATH. install.sh now installs coreutils as Step 4 so fresh installs get the watchdog by default. Previous: 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. 2026-05-27 — version-change Slack alert explicit about App Management prompt. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. macOS gtimeout pauses during sleep so this is 20 min of awake-time, not wall-clock; 10 min was too tight for legitimate /follow-up sweeps that send a transcript request mid-cycle. Previous: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installs coreutils as Step 4. 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -211,15 +211,17 @@ if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" 
     exit 0
 fi
 
-# Bounded Claude invocation. 600s = 10 min covers the slowest observed combined
-# /briefing+/follow-up+/digest run with comfortable headroom; tighter caps would risk
-# false-positive kills during legitimately long transcript fetches. On timeout (exit 124)
-# the lock is released by the EXIT trap and the next launchd tick takes over.
+# Bounded Claude invocation. 1200s = 20 min covers the slowest observed cycles with
+# real safety margin. macOS gtimeout pauses during system sleep, so this is 20 min of
+# AWAKE time inside the cycle, not wall-clock. Anything that needs more than 20 awake
+# minutes is hung, not slow. Tighter caps (was 600s briefly) false-positive on healthy
+# but-slow /follow-up sweeps that send a transcript request mid-cycle. On timeout
+# (exit 124) the lock is released by the EXIT trap and the next launchd tick takes over.
 #
 # Without a `timeout` binary the bounded-run guarantee is lost — a hung Claude could
 # hold .scheduler.lock indefinitely. Warn on Slack ONCE per install so the user knows
 # to `brew install coreutils`; don't re-spam on every cycle.
-CLAUDE_TIMEOUT_SECONDS=600
+CLAUDE_TIMEOUT_SECONDS=1200
 
 if [ -z "$TIMEOUT_CMD" ] && [ ! -f "$TIMEOUT_WARNED_FILE" ]; then
     log "WARN: neither \`timeout\` nor \`gtimeout\` on PATH — Claude invocations run unbounded."
