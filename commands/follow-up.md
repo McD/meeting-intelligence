@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-27 Phase 4.1 — Step 6 HTML renderer now handles *italic* and numbered (1.) lists; same renderer is duplicated into commands/digest.md Step 5 so both emails render consistently. Phase 4 adds ## Pattern flags section. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-05-28 — adds last_processed_msg watermark to awaiting-reply and awaiting-digest state files; reply branches now filter by Gmail labelIds (INBOX without SENT) to skip bot's own messages, preventing duplicate expand:/quote:/more:/send: re-firing. Previous: Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -67,6 +67,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
    - `slug:` — date+time meeting slug
    - `transcript_source:` — URL or `file://` path captured in Step 2 of the original run (may be empty)
    - `created_at:` — ISO timestamp when the follow-up was sent
+   - `last_processed_msg:` (optional, set after the first user reply is processed) — Gmail message ID of the most recent user reply we already acted on. Used to prevent re-processing the same reply on subsequent cycles.
 
 2. **Check expiry**: if `created_at` is more than 30 days ago:
    - Delete the awaiting-reply file
@@ -79,28 +80,40 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
    ```
    If `messages` array has only 1 entry, no reply yet — skip; the scheduler retries on the next 15-minute cycle.
 
-4. **If a reply is found**, read the last message in the array:
+4. **Identify the LAST message in the messages array** (highest index). Get its ID. Do NOT scan earlier messages or search across the whole thread for keywords — only the most recent message matters.
+
+   **Watermark check (dedup guard).** If `last_processed_msg` is set in the state file AND matches that last-message ID, we already saw this on a prior cycle — SKIP silently. Do not read, do not process, do not reply.
+
+   Otherwise read the message:
    ```bash
-   gws gmail +read --message-id "[message_id]"
+   gws gmail +read --message-id "[last_message_id]"
    ```
+
+   **Distinguish user reply from bot's own past message** by the `From` header (the bot and the user share the same Gmail account, so `labelIds` cannot disambiguate — both have `SENT`).
+   - Bot-sent messages: `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — bare email with no display name text before the angle brackets.
+   - User replies: `From: Mark McDermott <mark@screencloud.io>` — display name text precedes the angle brackets, added automatically by macOS Mail / Gmail web / mobile clients.
+
+   If From has no display name text → this is the bot's own past send (a prior `expand:`/`quote:`/clarification response). Update the state file with `last_processed_msg: <last_message_id>`, write it, and SKIP. Do not act, do not reply. The watermark prevents the same skip evaluation on the next cycle.
+
+   If From has display name text → continue to Step 5 with this as the user reply.
 
 5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows). Match against:
 
    - `cancel` / `skip` / `no` / `done` — delete the awaiting-reply file. Log `"Awaiting-reply cancelled by user for [meeting]"`. Done.
 
-   - `extend` / `wait` / `more time` — rewrite the state file with `created_at: <now>`. All other fields unchanged. Log `"Awaiting-reply extended for [meeting] — 30-day clock reset"`. Done.
+   - `extend` / `wait` / `more time` — rewrite the state file with `created_at: <now>` AND `last_processed_msg: <user_reply_message_id>`. All other fields unchanged. Log `"Awaiting-reply extended for [meeting] — 30-day clock reset"`. Done.
 
    - `expand: <request>` — the most powerful keyword. The user is asking for a focused re-run against the transcript with a specific ask:
      1. Fetch the transcript text from `transcript_source` using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
-     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Leave the state file in place. Log a one-line WARN.
+     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Update the state file with `last_processed_msg: <user_reply_message_id>` (leave all other fields unchanged). Log a one-line WARN.
      3. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more (e.g. "expand: write a 5-page document"). Format the output as plain prose or short bulleted lists — match the spirit of the original ask. Don't add scaffolding the user didn't ask for (no executive summaries, table of contents, or meta-commentary).
      4. Send the result as an email reply to the same thread: `gws gmail +send --thread-id "$thread_id" --subject "Re: Follow-up: [meeting]" --body "$RESULT_HTML" --html`. Also Slack-mirror if `~/.slack_webhook` exists.
-     5. Leave the awaiting-reply file in place — further `expand:` or `quote:` replies in the same thread are still welcome.
+     5. **Update the state file with `last_processed_msg: <user_reply_message_id>`** (all other fields unchanged). This is the dedup guard — the next cycle's Step 4 watermark check will see this user reply's ID and skip. Without it the same reply re-fires every 15 minutes.
      6. Log `"Expand request handled for [meeting]: [first 60 chars of request]"`.
 
    - `quote: <topic>` — extract direct quotes:
      1. Fetch the transcript text the same way as `expand:`.
-     2. If fetch fails, same graceful "transcript not available" reply.
+     2. If fetch fails, same graceful "transcript not available" reply. Update the state file with `last_processed_msg: <user_reply_message_id>`.
      3. Otherwise, scan the transcript for 3–6 direct quotes where speakers discuss or reference `<topic>`. Match fuzzy (substring + semantic). Output format:
         ```
         Quotes about "[topic]" from [meeting]:
@@ -111,10 +124,10 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
         ```
         If fewer than 3 quotes match the topic, say so honestly: "Only 2 direct quotes found about '<topic>'; the meeting may not have covered it deeply."
      4. Send as email reply + Slack mirror, same as `expand:`.
-     5. Leave the awaiting-reply file in place.
+     5. **Update the state file with `last_processed_msg: <user_reply_message_id>`** (all other fields unchanged). Same dedup guard as `expand:`.
      6. Log `"Quote request handled for [meeting]: [topic]"`.
 
-   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. Leave the state file in place. Log `"Unrecognized reply for [meeting]: <first line>"`.
+   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. **Update the state file with `last_processed_msg: <user_reply_message_id>`** so the same unrecognized reply doesn't trigger another clarification next cycle. Log `"Unrecognized reply for [meeting]: <first line>"`.
 
 6. Process every awaiting-reply file before falling through to Step 1.
 
@@ -135,6 +148,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
    - `mine:` — JSON array of ledger entry UUIDs in display order (the "Yours" section); indexed 1-based by reply keywords `done:`, `more:`, `drop:`
    - `owed:` — JSON array of ledger entry UUIDs in display order (the "Owed to you" section); indexed 1-based by `done:`/`more:`/`drop:` is **not** valid here (those keywords are Yours-only)
    - `nudges:` — JSON array of `{to, subject, body}` records in display order (the "Nudge drafts" section); indexed 1-based by reply keyword `send:`
+   - `last_processed_msg:` (optional, set after the first user reply is processed) — Gmail message ID of the most recent user reply we already acted on. Used to prevent re-processing the same reply on subsequent cycles.
 
 2. **Check expiry**: if `created_at` is more than 30 days ago, delete the awaiting-digest file, log `"Awaiting-digest expired — no reply within 30 days for $(basename file)"`, skip.
 
@@ -144,13 +158,25 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
    ```
    If only 1 message in thread, skip (no reply yet).
 
-4. **If a reply is found**, read the last message body via `gws gmail +read --message-id "[id]"`.
+4. **Identify the LAST message in the messages array** (highest index). Get its ID. Do not scan earlier messages.
+
+   **Watermark check (dedup guard).** If `last_processed_msg` is set AND matches that last-message ID, we already saw this on a prior cycle — SKIP silently. Do not read, process, ack, or fire nudges.
+
+   Otherwise read it via `gws gmail +read --message-id "[last_message_id]"`.
+
+   **Distinguish user reply from bot's own past ack** by the `From` header (same caveat as the awaiting-reply branch — both share the user's Gmail account, so `labelIds` cannot disambiguate).
+   - Bot-sent: `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — no display name.
+   - User reply: `From: Mark McDermott <mark@screencloud.io>` — display name present.
+
+   If From has no display name → this is the bot's own prior ack. Update state file with `last_processed_msg: <last_message_id>`, write it, SKIP. Do not act.
+
+   If From has display name → continue to Step 5 with this as the user reply.
 
 5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines). Lowercase the keyword prefix; preserve case in any argument that follows. Match against:
 
-   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop).
+   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop). (No watermark write — the file is gone.)
 
-   - `extend` / `wait` / `more time` → rewrite the state file with `created_at: <now>`, all other fields unchanged. Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
+   - `extend` / `wait` / `more time` → rewrite the state file with `created_at: <now>` AND `last_processed_msg: <user_reply_message_id>`, all other fields unchanged. Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
 
    - `done: N[, M, ...]` — for each index N (1-based), look up `mine[N-1]` (the UUID). Call `briefings_mcp.ledger.update_commitment_state(uuid, "done")` for each. Then send one ack reply summarising the changes:
      ```
@@ -168,7 +194,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
 
-6. **Leave the state file in place** after `done:`, `more:`, `drop:`, `send:`, or `extend` so further replies on the same thread are still processed. Only `cancel` and the 30-day expiry delete it.
+6. **After any branch except `cancel`** (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` so the next cycle's Step 4 watermark check skips this reply. All other fields unchanged. Without this guard, `done:`/`drop:`/`more:`/`send:`/`extend`/unrecognized replies all re-fire on every 15-minute cycle until something else moves the thread.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 
@@ -601,6 +627,7 @@ meeting: [Meeting Name]
 slug: YYYY-MM-DD-HHmm-slug
 transcript_source: $TRANSCRIPT_SOURCE
 created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+last_processed_msg:
 EOF
 chmod 600 "$AWAITING_REPLY"
 ```
@@ -608,6 +635,7 @@ chmod 600 "$AWAITING_REPLY"
 - `thread_id` ties subsequent replies back to the original follow-up email (Gmail thread).
 - `transcript_source` is the URL or `file://` path captured in Step 2 (Phase 1). The awaiting-reply branch in Step 0 re-fetches the transcript from here when `expand:` or `quote:` keywords arrive — the transcript content itself is **not** stored on disk.
 - `created_at` drives the 30-day expiry. `extend` rewrites this to "now"; `cancel` deletes the file entirely.
+- `last_processed_msg` is empty initially. Step 0's awaiting-reply branch sets it to the Gmail message ID of every user reply it acts on (expand/quote/extend/unrecognized), preventing the same reply from being re-processed on the next 15-minute scheduler cycle.
 
 If `$TRANSCRIPT_SOURCE` is empty (rare — Phase 1's Step 2 captures it in all five transcript-search branches plus the Step 0 reply-as-transcript path), leave the field empty in the state file. The Step 0 awaiting-reply branch responds to `expand:` and `quote:` with a graceful "transcript no longer available" message in that case.
 

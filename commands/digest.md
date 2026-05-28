@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-05-27 Phase 4.1 — Step 5 email renderer now inlined explicitly (was a reference to follow-up.md); handles *italic* and numbered (1.) lists so the digest's italic styling and numbered Yours/Owed lists render as styled HTML instead of literal asterisks. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
+<!-- version: 2026-05-28 — Step 6 state file now includes empty last_processed_msg field; dedup watermark consumed by commands/follow-up.md awaiting-digest branch to prevent duplicate done:/drop:/more:/send: re-firing on subsequent scheduler cycles. Previous: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -298,11 +298,14 @@ created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 mine: $MINE_IDS_JSON
 owed: $OWED_IDS_JSON
 nudges: $NUDGES_JSON
+last_processed_msg:
 EOF
 chmod 600 "$AWAITING_DIGEST"
 ```
 
 The `mine` and `owed` arrays are JSON of UUIDs in **display order** (so `done: 1` resolves to `mine[0]`). The `nudges` array is JSON of `{to, subject, body}` records in display order (so `send: 1` resolves to `nudges[0]`).
+
+`last_processed_msg` is empty initially. `commands/follow-up.md`'s awaiting-digest branch sets it to the Gmail message ID of every user reply it acts on (`done:`/`drop:`/`more:`/`send:`/`extend`/unrecognized), preventing the same reply from being re-processed on the next scheduler cycle. Without this watermark a `more: 2` reply would re-ack on every 15-minute tick until something else moves the thread.
 
 If `$THREAD_ID` is empty (email send didn't return a threadId), log `"WARN: digest sent but threadId not captured — awaiting-digest state skipped for $(date +%Y-%m-%d)"` to `~/Briefings/scheduler.log` and skip the state file. The digest itself is still delivered; only the reply-keyword loop is degraded.
 
