@@ -34,9 +34,39 @@ bash install.sh
 
 The installer asks for two things: the email address briefings should be sent to, and your company's email domain (used to classify meetings as internal vs external). Both are saved to `~/.briefings_config`. The slash commands read this config at runtime, so updating either value is just a matter of editing the file (no re-install needed).
 
+**During and after install you'll see macOS permission prompts** — from Terminal first, then from `gtimeout`, then from Claude Code itself once the scheduler starts running. Click Allow on every one. See [macOS permission setup](#macos-permission-setup) below for the full story; for now, Allow is always the right answer.
+
 ### Plugin format
 
 The repo is structured as a Claude Code plugin (manifest at `.claude-plugin/plugin.json`). For now, `install.sh` is the supported install path — it sets up the prerequisites, scheduler, and launchd job that the plugin manifest does not cover. A `/plugin install` flow may be wired up later once there's a clean way to skip the scheduler-setup steps from inside a plugin install.
+
+## After install
+
+The launchd job is loaded and running on a 15-minute cadence. Your first briefing arrives roughly **two hours before your next eligible calendar event** (a meeting with 2+ attendees that you haven't declined). Most cycles do nothing — the scheduler skips about 90% of runs when there's no work — so don't expect log spam.
+
+**Sanity-check the install end-to-end:**
+
+```bash
+bash scripts/verify-v1.sh
+```
+
+13 automated assertions cover file layout, the runtime Python venv, MCP server registration, the decision ledger, the reply-dedup classifier, and the smoke-test harnesses. Each one prints PASS or FAIL. If everything passes, the install is good.
+
+Optional flags exercise the real Claude-call paths (each costs a few API spend and a couple of minutes):
+
+- `--with-briefing` — force-regenerate the next upcoming meeting's briefing and assert SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed)
+- `--with-followup` — force-regenerate the latest follow-up and assert Phase 1 shape
+- `--with-digest` — force-generate today's digest and assert Phase 3 shape
+
+**Watch the scheduler in real time:**
+
+```bash
+tail -f ~/Briefings/scheduler.log
+```
+
+A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending.
+
+**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `more: N`, `drop: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 
 ## Update
 
@@ -45,24 +75,17 @@ cd meeting-intelligence
 bash update.sh
 ```
 
-`update.sh` pulls the latest from git, replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`, and refreshes the editable install of the `briefings_mcp` package in the runtime venv at `~/.briefings/venv`. Your config and your decision ledger are untouched. The launchd job keeps running.
-
-After updating, you can sanity-check the install end-to-end:
-
-```bash
-bash scripts/verify-v1.sh
-```
-
-Optional flags:
-
-- `--with-briefing` — force-regenerates the next upcoming meeting's briefing and asserts the SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed meetings). Costs a real `claude -p` call and a couple of minutes.
-Replies to any follow-up email with `expand: <request>`, `quote: <topic>`, `cancel`, or `extend` are picked up by the scheduler on the next 15-minute cycle. See "Reply keywords" below for details.
+`update.sh` pulls the latest from git, replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`, and refreshes the editable install of the `briefings_mcp` package in the runtime venv at `~/.briefings/venv`. Your config and your decision ledger are untouched. The launchd job keeps running. Re-run `bash scripts/verify-v1.sh` after updating if you want belt-and-suspenders confirmation.
 
 ## macOS permission setup
 
-The scheduler runs Claude Code headlessly via launchd, so it cannot answer macOS permission dialogs. There's no setup that eliminates these dialogs entirely — macOS keys TCC permissions to the binary file, so every Claude Code update creates a new binary that needs fresh approval. The steps below minimise the friction.
+**TL;DR.** macOS will prompt for permissions as the scheduler runs. **Click Allow on every dialog you see from Claude Code, `gtimeout`, or a bare version number like `2.1.133`.** These are real and necessary. Expect 3-6 prompts in the first hour after install, then quiet for ~30 days until macOS Sequoia's renewable-consent cycle re-prompts. There is no way to suppress these entirely — only manage them.
 
-**1. Grant your terminal app the broad TCC permissions.** This covers interactive `claude` runs (when you sign in, debug a failing scheduler cycle, or run `/briefing` by hand). Child processes inherit TCC from their parent, so once Terminal (or iTerm, Ghostty, Warp) is approved, every future `claude` binary it spawns is too. In System Settings → Privacy & Security, add your terminal to:
+The rest of this section is detail for when something doesn't behave the way that TL;DR predicts.
+
+### One-time terminal grant
+
+Grant your terminal app the broad TCC permissions. This covers interactive `claude` runs (when you sign in, debug a failing scheduler cycle, or run `/briefing` by hand). Child processes inherit TCC from their parent, so once Terminal (or iTerm, Ghostty, Warp) is approved, every future `claude` binary it spawns is too. In System Settings → Privacy & Security, add your terminal to:
 
 - Full Disk Access
 - App Management
@@ -70,13 +93,22 @@ The scheduler runs Claude Code headlessly via launchd, so it cannot answer macOS
 
 Restart the terminal app after granting.
 
-**Note: Terminal's grants do not cover the scheduler.** launchd-spawned processes don't inherit TCC from Terminal — their TCC parent is launchd itself. So the first time the scheduler runs after a Claude Code update, macOS will show a permission dialog (typically "<version> would like to access data from other apps"). Click Allow when you see it. If you miss the prompt, the scheduler will fail silently until you do — see `scheduler.log` for the failure. The scheduler posts a Slack heads-up when it detects a Claude Code version change so you know to expect this.
+### Why the scheduler still prompts
 
-If the same prompt re-appears for the same Claude Code version (i.e. you've clicked Allow but it keeps re-prompting on each 15-minute cycle), the TCC grant didn't stick — a known macOS quirk for launchd-spawned binaries. Two workarounds:
+Terminal's grants do not reach the scheduler. launchd-spawned processes don't inherit TCC from Terminal — their TCC parent is launchd itself. So the first time the scheduler runs after a Claude Code update, macOS will show a permission dialog (typically "`<version>` would like to access data from other apps"). Click Allow. If you miss the prompt the scheduler will fail silently until you do — see `scheduler.log` for `ERROR: …` lines and the Slack heads-up the scheduler posts on Claude Code version change.
+
+If the same prompt re-appears for the same Claude Code version (you've clicked Allow but it keeps re-prompting on each 15-minute cycle), the TCC grant didn't stick — a known macOS quirk for launchd-spawned binaries. Two workarounds:
+
 - Open System Settings → Privacy & Security → App Management and confirm the entry is toggled on. Remove any stale duplicate entries from older Claude versions.
 - If it still re-prompts, add `/bin/bash` to App Management (broad but reliable — bash is the launchd entry point for the scheduler).
 
-**2. Auto-prune old Claude Code versions AND their TCC entries.** The native installer drops every prior version at `~/.local/share/claude/versions/<version>` (~200MB each) and never removes them. Each leftover binary leaves an orphaned macOS TCC permission entry that can re-trigger prompts for the scheduler. A small script plus a SessionStart hook clears both automatically.
+### macOS Sequoia monthly re-auth
+
+Starting with macOS 15, Apple requires periodic re-authorization for some Privacy permissions — notably "Allow access to data of other apps" (`SystemPolicyAppData`). Even when correctly granted, the prompt will recur every ~30 days. There is no user-level workaround; click Allow and continue. The scheduler will fail silently between the prompt firing and you answering it.
+
+### Auto-prune old Claude versions and their TCC entries
+
+The Claude Code native installer drops every prior version at `~/.local/share/claude/versions/<version>` (~200MB each) and never removes them. Each leftover binary leaves an orphaned macOS TCC permission entry that can re-trigger prompts for the scheduler. A small script plus a SessionStart hook clears both automatically.
 
 Save to `~/.local/bin/claude-prune-versions` and `chmod +x`:
 
@@ -156,11 +188,20 @@ meeting-intelligence/
 │   ├── briefing.md         # /briefing slash command
 │   ├── follow-up.md        # /follow-up slash command
 │   └── digest.md           # /digest slash command (Phase 3 actions tracker)
-├── briefings_mcp/          # Local MCP server + ledger module (Python)
+├── briefings_mcp/
+│   ├── server.py           # FastMCP server (search_decisions, get_decision_by_id, list_attendees)
+│   ├── ledger.py           # Append-only JSONL ledger + atomic state writes
+│   ├── query.py            # SQLite-indexed search + cross-meeting pattern detection
+│   ├── replies.py          # Canonical From-header / watermark classifier (used by Step 4 of follow-up.md)
+│   └── schema.py           # Ledger entry validation
 ├── scripts/
 │   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
 │   ├── dedup_ledger.py     # One-time ledger cleanup (Phase 4; dry-run by default)
-│   └── verify-v1.sh        # End-to-end smoke test
+│   ├── verify-v1.sh        # End-to-end smoke test (13 assertions; --with-* flags exercise real Claude calls)
+│   ├── smoke_test_u3p3.py  # Commitment-state mutator
+│   ├── smoke_test_u4.py    # Ledger query module
+│   ├── smoke_test_u4p4.py  # find_patterns + ledger dedup
+│   └── smoke_test_dedup.py # Reply-dedup classifier (28 fixtures incl. third-party attack rows)
 └── README.md
 ```
 
