@@ -4,6 +4,25 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions track the
 `.claude-plugin/plugin.json` manifest.
 
+## Unreleased
+
+### Added
+
+- **`MY_NAME` config field** — optional entry in `~/.briefings_config`. Widens the
+  `/digest` "Yours" matcher so commitments recorded under your display name
+  (e.g. "Jane Doe") get attributed correctly. Falls back to the local-part of
+  `MY_EMAIL` if absent. `install.sh` prompts for it as a third question.
+- **`docs/README.md`** — short note framing the `docs/` folder as build-time
+  working notes rather than authoritative product documentation.
+
+### Changed
+
+- **Genericised hardcoded identity strings** in `commands/digest.md` and
+  `commands/follow-up.md`. The matcher now reads `MY_NAME` from config instead
+  of literal first-name fallbacks; example strings in the bot-vs-user
+  disambiguation and Teams transcript notes use generic placeholders. No
+  behaviour change for installs that set `MY_NAME` to their actual full name.
+
 ## [0.2.0] — 2026-05-19
 
 ### Added

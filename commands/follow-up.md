@@ -108,7 +108,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    If `FROM_OK=1`, continue to the bot-vs-user check below.
 
-   **Bot-vs-user disambiguation.** Address matches `$MY_EMAIL`; now distinguish the user's own mail-client reply from the bot's own past send. The bot uses `gws gmail +send`, which produces `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — bare email, no display-name text before the angle brackets. The user's mail client (macOS Mail, Gmail web, mobile) automatically prepends a display name: `From: Mark McDermott <mark@screencloud.io>`. (`labelIds` cannot disambiguate because bot and user share one Gmail account — both messages get `SENT`.)
+   **Bot-vs-user disambiguation.** Address matches `$MY_EMAIL`; now distinguish the user's own mail-client reply from the bot's own past send. The bot uses `gws gmail +send`, which produces `From: you@example.com` or `From: <you@example.com>` — bare email, no display-name text before the angle brackets. The user's mail client (macOS Mail, Gmail web, mobile) automatically prepends a display name: `From: Your Name <you@example.com>`. (`labelIds` cannot disambiguate because bot and user share one Gmail account — both messages get `SENT`.)
    - If From has NO display-name text → bot's own past send. Set watermark per Step 5b with `last_processed_msg: <last_message_id>` and SKIP.
    - If From has display-name text → real user reply. Continue to Step 5.
 
@@ -220,8 +220,8 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
    If `FROM_OK=1`, continue to the bot-vs-user check below.
 
    **Bot-vs-user disambiguation** (address matches `$MY_EMAIL` — distinguish user reply from bot ack):
-   - Bot-sent: `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — no display name.
-   - User reply: `From: Mark McDermott <mark@screencloud.io>` — display name text precedes the angle brackets.
+   - Bot-sent: `From: you@example.com` or `From: <you@example.com>` — no display name.
+   - User reply: `From: Your Name <you@example.com>` — display name text precedes the angle brackets.
 
    If From has no display-name text → bot's own prior ack. Set watermark per Step 6 with `last_processed_msg: <last_message_id>` and SKIP. Do not act.
 
@@ -395,7 +395,7 @@ Leave `$TRANSCRIPT_SOURCE` empty if no concrete source link can be produced (rar
   - `from:noreply@email.teams.microsoft.com after:YYYY/MM/DD`
   - `subject:"Meeting transcript" OR subject:"Meeting Recap" after:YYYY/MM/DD`
 - If found, the transcript text is inline in the email body
-- Teams transcripts look like: `Mark McDermott  0:01  Hello...` (name + timestamp + text)
+- Teams transcripts look like: `Jane Doe  0:01  Hello...` (name + timestamp + text)
 
 **D) Drive search**
 - Search for Google Docs modified today whose title contains the meeting name, "transcript", "notes from", or "meeting recap"
@@ -454,16 +454,16 @@ Extract:
 - **1-sentence meeting summary** — what was this meeting about
 - **Key decisions made** — anything agreed or resolved
 - **Action items** — each as: `[Person] — [what they need to do] (by [date] if mentioned)`
-  - List **Mark's own actions first**
+  - List **the user's own actions first** (the user is whoever owns `$MY_EMAIL`; render their actions under `**You**`)
   - If no name is attached to an action, attribute it to the meeting organiser
-  - Include ALL actions, not just Mark's
+  - Include ALL actions, not just the user's
   - **Confidence callouts** — when the transcript leaves the owner or scope genuinely ambiguous, mark the uncertainty inline. Use sparingly; do not hedge clean actions.
     - **Unclear owner** — append `?` to the person's name: `**You?**`, `**Alice?**`, `**Organiser?**`. Trigger this only when the transcript does not assign a clear owner (e.g. "someone should send the recap").
-    - **Unclear scope** — append italic `*(scope?)*` at the end of the action text. Trigger when the action is vague enough that the person would not know what "done" looks like (e.g. "Mark to do something about the website" → `**You** — handle the website *(scope?)*`).
+    - **Unclear scope** — append italic `*(scope?)*` at the end of the action text. Trigger when the action is vague enough that the person would not know what "done" looks like (e.g. "Owner to do something about the website" → `**You** — handle the website *(scope?)*`).
     - When an action is unambiguous on both owner and scope, neither marker appears — this is the common case. A follow-up peppered with `?` marks signals a bad extraction, not a thorough one.
 - **Open questions** — any question raised in the meeting that did not get a definitive answer, or any topic explicitly flagged "for later", "TBD", "we'll come back to", "needs more thought", or similar. Include questions that arose during decisions even if those decisions still stand (e.g. "we'll launch in March" decided, but "how do we sequence with the partner team?" left open). **Do not** include items that were already captured as Action items — those are tracked separately. If every question raised in the meeting got an answer, return nothing here and the section is omitted.
 - **Notable threads** — 3 to 5 bullets capturing texture from the meeting that is not already covered by Summary, Action items, or Key decisions. Interesting framings, analogies, a striking line someone said, soft commitments ("you said you'd think about Z"), tangents worth remembering. **Do not** restate decisions or actions here — this section exists precisely because the punchy top loses the texture. **Ceiling: 5 bullets maximum.** If there are fewer than 3 genuinely notable moments, return fewer (or none) rather than padding. Each bullet should be one sentence, written in the third person where helpful (e.g. "Robert framed the legacy industry as 'selling 2010 hardware in 2026 packaging'").
-- **Counterparty read** — *(only when at least one attendee has an email outside `$COMPANY_DOMAIN` — i.e. external or mixed meetings; skip entirely for internal-only meetings)* — one or two sentences on what the people from outside `$COMPANY_DOMAIN` seemed to care about most, separate from agreed actions. Tone, emphasis, what they kept returning to, what they pushed back on. If counterparty signal was thin (e.g. they barely spoke), say so honestly — e.g. "Limited counterparty signal; meeting was largely a Mark monologue." Keep it short and observation-led, not interpretation-led.
+- **Counterparty read** — *(only when at least one attendee has an email outside `$COMPANY_DOMAIN` — i.e. external or mixed meetings; skip entirely for internal-only meetings)* — one or two sentences on what the people from outside `$COMPANY_DOMAIN` seemed to care about most, separate from agreed actions. Tone, emphasis, what they kept returning to, what they pushed back on. If counterparty signal was thin (e.g. they barely spoke), say so honestly — e.g. "Limited counterparty signal; meeting was largely a one-sided monologue from our side." Keep it short and observation-led, not interpretation-led.
 
 If the transcript is long, focus on the last 20% (actions cluster at the end) but scan the whole thing for anything explicitly flagged as an action.
 
@@ -573,7 +573,7 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 ---
 
 Reply to this thread to dig deeper:
-- `expand: <request>` — re-runs against the transcript (e.g. "expand: write up Mark's industry overview as a one-pager")
+- `expand: <request>` — re-runs against the transcript (e.g. "expand: write up the industry overview as a one-pager")
 - `quote: <topic>` — pulls direct quotes about that topic
 - `cancel` — drops the reply thread for this meeting
 - `extend` — keeps the thread open another 30 days

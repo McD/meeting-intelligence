@@ -8,10 +8,16 @@ Read open commitments from the ledger and deliver an actions tracker email plus 
 ```bash
 MY_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
 COMPANY_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+MY_NAME=$(grep '^MY_NAME=' ~/.briefings_config 2>/dev/null | cut -d= -f2-)
 if [ -z "$MY_EMAIL" ] || [ -z "$COMPANY_DOMAIN" ]; then
     echo "Error: ~/.briefings_config missing MY_EMAIL or COMPANY_DOMAIN. Run the meeting-intelligence installer." >&2
     exit 1
 fi
+# MY_NAME is optional. If absent, fall back to the local-part of MY_EMAIL.
+if [ -z "$MY_NAME" ]; then
+    MY_NAME="${MY_EMAIL%%@*}"
+fi
+MY_FIRST_NAME="${MY_NAME%% *}"
 ```
 
 ## Rules
@@ -40,18 +46,24 @@ Note: this check uses today's date in local time, matching the slot the schedule
 
 ## Step 1: Pull open commitments from the ledger
 
-Use a Python heredoc to read `~/.briefings/decisions.jsonl` via `briefings_mcp.ledger.iter_entries` and split into Yours (owner matches MY_EMAIL or "You" or "Mark" or "Mark McDermott", case-insensitive) and Owed to you (everything else where attendees contains MY_EMAIL).
+Use a Python heredoc to read `~/.briefings/decisions.jsonl` via `briefings_mcp.ledger.iter_entries` and split into Yours (owner matches MY_EMAIL, "You", or any token derived from MY_NAME — case-insensitive) and Owed to you (everything else where attendees contains MY_EMAIL).
 
 Include both `state: "open"` and `state: "in-flight"` commitments (both are still in flight from the user's perspective). Decisions are not in scope here.
 
 ```bash
-LEDGER_OUT=$(MY_EMAIL="$MY_EMAIL" python3 <<'PYEOF'
+LEDGER_OUT=$(MY_EMAIL="$MY_EMAIL" MY_NAME="$MY_NAME" python3 <<'PYEOF'
 import os, json, sys
 from datetime import datetime, timezone
 from briefings_mcp import ledger
 
 my_email = os.environ["MY_EMAIL"].lower()
-my_aliases = {my_email, "you", "mark", "mark mcdermott"}
+my_name = os.environ.get("MY_NAME", "").strip().lower()
+my_aliases = {my_email, "you"}
+if my_name:
+    my_aliases.add(my_name)
+    first = my_name.split()[0]
+    if first:
+        my_aliases.add(first)
 
 def is_mine(owner_str):
     if not owner_str:
@@ -137,10 +149,10 @@ Hi <first name>,
 
 Following up on <commitment summary> from our <meeting name> on <date>. Where does this stand?
 
-— Mark
+— $MY_FIRST_NAME
 ```
 
-Cap drafts at ~80 words. Don't editorialize about the delay; just ask the question.
+Substitute `$MY_FIRST_NAME` (set at the top of this command from the config) for the actual sign-off. Cap drafts at ~80 words. Don't editorialize about the delay; just ask the question.
 
 Build a `nudges` array of `{to, subject, body}` records in display order. This is what the reply-keyword `send: N` will fire.
 
@@ -172,7 +184,7 @@ Save to `$DIGEST_FILE` (from Step 0), then `chmod 600` the file.
 
    Following up on <commitment summary> from our <meeting name> on <DD Mon>. Where does this stand?
 
-   — Mark
+   — $MY_FIRST_NAME
 
 ---
 

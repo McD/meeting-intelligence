@@ -233,10 +233,13 @@ After install, files land here:
 ```
 MY_EMAIL=you@example.com
 COMPANY_DOMAIN=example.com
+MY_NAME=Your Full Name
 LOOKBACK_DAYS=60
 ```
 
 `LOOKBACK_DAYS` controls how far back the briefing's `Delta:` section looks for prior touchpoints with overlapping attendees. The default of 60 catches quarterly cycles without dredging up stale context — drop it to 30 if you want a tighter window, raise it to 90 if you want longer memory.
+
+`MY_NAME` is optional. It widens the "Yours" matcher in `/digest` to catch commitments where the owner is recorded as your display name ("Jane Doe") rather than your email address. If the field is absent the matcher falls back to the local-part of your email — fine for most cases, but if your name appears literally in extracted commitments you'll get better results by setting it.
 
 Edit any value and re-run `update.sh` (or just edit the file; the commands read it on every run).
 
@@ -271,7 +274,7 @@ Every `/follow-up` writes the decisions and commitments it extracts to an append
 
 Every follow-up invites four reply keywords on its email thread. The scheduler polls each thread every 15 minutes via the `~/Briefings/*-awaiting-reply-*.md` state file written when the follow-up was sent.
 
-- `expand: <request>` — re-fetches the meeting transcript (Gemini Doc, Teams Recap, or local MacWhisper file) and runs Claude with your specific ask. Example: `expand: write up Mark's industry overview as a one-pager`. The result lands as a reply in the same email thread (and Slack channel if `~/.slack_webhook` is configured).
+- `expand: <request>` — re-fetches the meeting transcript (Gemini Doc, Teams Recap, or local MacWhisper file) and runs Claude with your specific ask. Example: `expand: write up the industry overview as a one-pager`. The result lands as a reply in the same email thread (and Slack channel if `~/.slack_webhook` is configured).
 - `quote: <topic>` — returns 3 to 6 direct quotes from the transcript where speakers discuss the topic. Useful for pulling out the actual lines someone said about a thing.
 - `cancel` — drops the reply thread for this meeting. The state file is deleted.
 - `extend` — resets the 30-day expiry clock. Use when you want to come back to a meeting weeks later.
@@ -322,7 +325,7 @@ Twice a week — Monday and Thursday at 10am local — the scheduler fires `/dig
 
 The digest has up to three sections:
 
-- **Yours** — open commitments where the owner is you (matched by `MY_EMAIL`, "You", "Mark", or "Mark McDermott", case-insensitive). Each item shows meeting name, age in days, and any due date.
+- **Yours** — open commitments where the owner is you (matched case-insensitively against `MY_EMAIL`, the literal "You", and any token derived from `MY_NAME` if set). Each item shows meeting name, age in days, and any due date.
 - **Owed to you** — open commitments from your meetings where the owner is someone else. Useful for nudging.
 - **Nudge drafts** — pre-written 2 to 3 sentence reminder emails for any Owed-to-you item older than 14 days or past its due date. Each draft is numbered for `send: N` reply triggering.
 

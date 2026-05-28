@@ -142,9 +142,11 @@ echo -e "${BOLD}Step 7: Your details${NC}"
 # Load any existing values so re-running install is idempotent
 EXISTING_EMAIL=""
 EXISTING_DOMAIN=""
+EXISTING_NAME=""
 if [ -f ~/.briefings_config ]; then
     EXISTING_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
     EXISTING_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config 2>/dev/null | cut -d= -f2)
+    EXISTING_NAME=$(grep '^MY_NAME=' ~/.briefings_config 2>/dev/null | cut -d= -f2-)
 fi
 
 echo "Briefings and follow-ups will be sent to this address."
@@ -165,10 +167,22 @@ read -rp "$PROMPT_DOMAIN" COMPANY_DOMAIN
 COMPANY_DOMAIN="${COMPANY_DOMAIN:-$EXISTING_DOMAIN}"
 [ -z "$COMPANY_DOMAIN" ] && fail "Company domain is required."
 
+echo ""
+echo "Your display name. Used to match commitments where the owner is recorded"
+echo "as your full name (e.g. 'Jane Doe') rather than your email. Optional —"
+echo "press Enter to skip and the matcher will fall back to the local-part of"
+echo "your email."
+PROMPT_NAME="Enter your full name"
+[ -n "$EXISTING_NAME" ] && PROMPT_NAME="$PROMPT_NAME [$EXISTING_NAME]"
+PROMPT_NAME="$PROMPT_NAME: "
+read -rp "$PROMPT_NAME" MY_NAME
+MY_NAME="${MY_NAME:-$EXISTING_NAME}"
+
 umask 077
 cat > ~/.briefings_config <<EOF
 MY_EMAIL=$MY_EMAIL
 COMPANY_DOMAIN=$COMPANY_DOMAIN
+MY_NAME=$MY_NAME
 EOF
 ok "Saved to ~/.briefings_config"
 
