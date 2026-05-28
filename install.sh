@@ -91,9 +91,20 @@ echo "If you haven't signed in yet, open a new Terminal window and run: claude"
 echo ""
 read -rp "Press Enter once you're signed in to Claude..."
 
-# ── Step 4: gws ──────────────────────────────────────────────────────────────
+# ── Step 4: GNU coreutils (provides gtimeout for the scheduler watchdog) ─────
 echo ""
-echo -e "${BOLD}Step 4: gws — Google Workspace connector${NC}"
+echo -e "${BOLD}Step 4: GNU coreutils${NC}"
+if command -v gtimeout &>/dev/null; then
+    ok "coreutils already installed (gtimeout available)."
+else
+    info "Installing coreutils for gtimeout (scheduler hang-detection)..."
+    brew install coreutils
+    ok "coreutils installed."
+fi
+
+# ── Step 5: gws ──────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}Step 5: gws — Google Workspace connector${NC}"
 if command -v gws &>/dev/null; then
     ok "gws already installed."
 else
@@ -102,9 +113,9 @@ else
     ok "gws installed."
 fi
 
-# ── Step 5: Authenticate Google ──────────────────────────────────────────────
+# ── Step 6: Authenticate Google ──────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 5: Connect your Google account${NC}"
+echo -e "${BOLD}Step 6: Connect your Google account${NC}"
 echo ""
 echo "A browser window will open. Sign in with the Google account you want"
 echo "briefings to read from."
@@ -124,9 +135,9 @@ else
     warn "If briefings don't work, run: gws auth login"
 fi
 
-# ── Step 6: Your email and company domain ────────────────────────────────────
+# ── Step 7: Your email and company domain ────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 6: Your details${NC}"
+echo -e "${BOLD}Step 7: Your details${NC}"
 
 # Load any existing values so re-running install is idempotent
 EXISTING_EMAIL=""
@@ -161,9 +172,9 @@ COMPANY_DOMAIN=$COMPANY_DOMAIN
 EOF
 ok "Saved to ~/.briefings_config"
 
-# ── Step 7: Slack (optional) ─────────────────────────────────────────────────
+# ── Step 8: Slack (optional) ─────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 7: Slack notifications (optional)${NC}"
+echo -e "${BOLD}Step 8: Slack notifications (optional)${NC}"
 if [ -f ~/.slack_webhook ]; then
     ok "Slack webhook already configured. Press Enter to keep, or paste a new URL to replace."
 fi
@@ -183,9 +194,9 @@ if [ -n "$SLACK_WEBHOOK" ]; then
     ok "Slack webhook saved."
 fi
 
-# ── Step 8: Install command files ────────────────────────────────────────────
+# ── Step 9: Install command files ────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 8: Installing slash commands${NC}"
+echo -e "${BOLD}Step 9: Installing slash commands${NC}"
 mkdir -p ~/.claude/commands
 
 cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
@@ -195,11 +206,11 @@ ok "/briefing, /follow-up, and /digest installed."
 
 echo ""
 echo -e "${YELLOW}Note:${NC} If you have Claude Code open in another window, close and"
-echo "reopen it so the new commands are picked up before the Step 12 test."
+echo "reopen it so the new commands are picked up before the Step 13 test."
 
-# ── Step 9: Scheduler ────────────────────────────────────────────────────────
+# ── Step 10: Scheduler ───────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 9: Background scheduler${NC}"
+echo -e "${BOLD}Step 10: Background scheduler${NC}"
 umask 077
 mkdir -p ~/Briefings
 cp "$SCRIPT_DIR/scripts/scheduler.sh" ~/Briefings/scheduler.sh
@@ -260,9 +271,9 @@ PLIST_EOF
 launchctl load "$PLIST_PATH"
 ok "Scheduler installed and running (fires every 15 min)."
 
-# ── Step 10: Ledger + MCP server ─────────────────────────────────────────────
+# ── Step 11: Ledger + MCP server ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 10: Decision ledger and MCP server${NC}"
+echo -e "${BOLD}Step 11: Decision ledger and MCP server${NC}"
 #
 # v1 adds a JSONL decision ledger at ~/.briefings/decisions.jsonl and a local
 # read-only MCP server (briefings_mcp) so /briefing can pull "what did we last
@@ -361,9 +372,9 @@ else
     fi
 fi
 
-# ── Step 11: Enable Claude integrations ──────────────────────────────────────
+# ── Step 12: Enable Claude integrations ──────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 11: Enable Claude integrations${NC}"
+echo -e "${BOLD}Step 12: Enable Claude integrations${NC}"
 echo ""
 echo -e "${YELLOW}One manual step required:${NC}"
 echo ""
@@ -377,9 +388,9 @@ open "https://claude.ai/settings/integrations" 2>/dev/null || \
 echo ""
 read -rp "Once you've enabled the integrations, press Enter..."
 
-# ── Step 12: Test ────────────────────────────────────────────────────────────
+# ── Step 13: Test ────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Step 12: Running a test${NC}"
+echo -e "${BOLD}Step 13: Running a test${NC}"
 info "Asking Claude to check for upcoming meetings (takes ~30 seconds)..."
 echo ""
 

@@ -1,14 +1,26 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout so Slack stalls don't hold .scheduler.lock; run_claude wrapped in `timeout 600` with distinct exit-124 Slack alert; CLAUDE_VERSION_FILE write deferred until after a successful run so missed App Management prompts re-notify on subsequent cycles. Previous: 2026-05-27 — version-change Slack alert explicit about expecting an App Management prompt and clicking Allow. Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local).
+# version: 2026-05-28b — detects `timeout`/`gtimeout` at script start instead of assuming GNU coreutils; falls back to unbounded runs with a one-time Slack warning when neither binary is on PATH. install.sh now installs coreutils as Step 4 so fresh installs get the watchdog by default. Previous: 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. 2026-05-27 — version-change Slack alert explicit about App Management prompt. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
 GWS_AUTH_FAILED_FILE="$BRIEFING_DIR/.gws_auth_failed"
 CLAUDE_VERSION_FILE="$BRIEFING_DIR/.claude_version"
+TIMEOUT_WARNED_FILE="$BRIEFING_DIR/.timeout_warned"
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 GWS=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
+
+# macOS doesn't ship GNU `timeout`. Homebrew's coreutils provides `gtimeout`
+# (or `timeout` when installed --with-default-names). Detect what's available
+# and store the command name (or empty string for "no bounded runs").
+if command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout"
+else
+    TIMEOUT_CMD=""
+fi
 
 umask 077
 mkdir -p "$BRIEFING_DIR"
@@ -203,14 +215,28 @@ fi
 # /briefing+/follow-up+/digest run with comfortable headroom; tighter caps would risk
 # false-positive kills during legitimately long transcript fetches. On timeout (exit 124)
 # the lock is released by the EXIT trap and the next launchd tick takes over.
+#
+# Without a `timeout` binary the bounded-run guarantee is lost — a hung Claude could
+# hold .scheduler.lock indefinitely. Warn on Slack ONCE per install so the user knows
+# to `brew install coreutils`; don't re-spam on every cycle.
 CLAUDE_TIMEOUT_SECONDS=600
+
+if [ -z "$TIMEOUT_CMD" ] && [ ! -f "$TIMEOUT_WARNED_FILE" ]; then
+    log "WARN: neither \`timeout\` nor \`gtimeout\` on PATH — Claude invocations run unbounded."
+    notify_slack ":warning: Briefings scheduler can't enforce a Claude timeout — \`coreutils\` is not installed. Run \`brew install coreutils\` to enable the 10-min watchdog. Briefings still run; only the hang-detection safety net is missing."
+    touch "$TIMEOUT_WARNED_FILE"
+fi
 
 run_claude() {
     local label="$1"
     local prompt="$2"
     log "Running: $label"
     local output rc
-    output=$(timeout "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    if [ -n "$TIMEOUT_CMD" ]; then
+        output=$("$TIMEOUT_CMD" "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    else
+        output=$("$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    fi
     rc=$?
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
