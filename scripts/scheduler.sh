@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-27 — version-change Slack alert now explicit about expecting an App Management prompt and clicking Allow. Previous: Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local).
+# version: 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout so Slack stalls don't hold .scheduler.lock; run_claude wrapped in `timeout 600` with distinct exit-124 Slack alert; CLAUDE_VERSION_FILE write deferred until after a successful run so missed App Management prompts re-notify on subsequent cycles. Previous: 2026-05-27 — version-change Slack alert explicit about expecting an App Management prompt and clicking Allow. Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local).
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -16,9 +16,11 @@ mkdir -p "$BRIEFING_DIR"
 log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; }
 notify_slack() {
     [ -n "$SLACK_WEBHOOK" ] || return 0
-    curl -s -X POST "$SLACK_WEBHOOK" \
+    # --max-time/--connect-timeout: Slack stalls must not hold .scheduler.lock.
+    # Delivery is fire-and-forget; nothing downstream depends on the response.
+    curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" \
         -H 'Content-type: application/json' \
-        -d "{\"text\": \"$1\"}"
+        -d "{\"text\": \"$1\"}" >/dev/null 2>&1 || true
 }
 
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
@@ -46,13 +48,18 @@ trap 'rm -f "$LOCK_FILE"' EXIT
 # After some Claude Code updates, --dangerously-skip-permissions can be re-prompted,
 # which the headless scheduler cannot answer. Flagging the version change up front means
 # the user knows what to do if briefings start failing silently afterwards.
+#
+# The CLAUDE_VERSION_FILE is NOT written here — it is written only after a successful
+# Claude invocation later in this script. Writing it eagerly would mean a single missed
+# App Management prompt (e.g. while the user is asleep) silences the version-change Slack
+# alert on every subsequent cycle even though briefings are still failing. Deferring the
+# write means the alert re-fires on every cycle until at least one Claude run succeeds.
 CURRENT_CLAUDE_VERSION=$("$CLAUDE" --version 2>/dev/null | head -1 || echo "unknown")
 LAST_CLAUDE_VERSION=$(cat "$CLAUDE_VERSION_FILE" 2>/dev/null || echo "")
 if [ -n "$LAST_CLAUDE_VERSION" ] && [ "$CURRENT_CLAUDE_VERSION" != "$LAST_CLAUDE_VERSION" ]; then
     log "Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION"
-    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). macOS will show an App Management prompt on the next scheduler cycle — *click Allow when it appears*, otherwise briefings will fail silently until you do. If you miss it, open a terminal and run \`claude\` once interactively to clear any new permission prompts before the next cycle."
+    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). macOS will show an App Management prompt on the next scheduler cycle. *Click Allow when it appears* otherwise briefings will fail silently until you do. If you miss it, open a terminal and run \`claude\` once interactively to clear any new permission prompts before the next cycle."
 fi
-echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
 
 # === Pre-flight gate ===
 # One gws call surfaces both auth state and calendar contents. Fails open: if the
@@ -192,15 +199,24 @@ if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" 
     exit 0
 fi
 
+# Bounded Claude invocation. 600s = 10 min covers the slowest observed combined
+# /briefing+/follow-up+/digest run with comfortable headroom; tighter caps would risk
+# false-positive kills during legitimately long transcript fetches. On timeout (exit 124)
+# the lock is released by the EXIT trap and the next launchd tick takes over.
+CLAUDE_TIMEOUT_SECONDS=600
+
 run_claude() {
     local label="$1"
     local prompt="$2"
     log "Running: $label"
     local output rc
-    output=$("$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    output=$(timeout "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
     rc=$?
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
-    if echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
+    if [ "$rc" -eq 124 ]; then
+        log "ERROR: $label timed out after ${CLAUDE_TIMEOUT_SECONDS}s (Claude killed)."
+        notify_slack ":hourglass: Briefings stalled — Claude Code did not return within ${CLAUDE_TIMEOUT_SECONDS}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
+    elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
         log "ERROR: $label auth failure."
         notify_slack ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
     elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
@@ -210,6 +226,7 @@ run_claude() {
         log "ERROR: $label exited with non-zero status ($rc)."
         notify_slack ":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage."
     fi
+    return "$rc"
 }
 
 # Combined dispatch — Claude executes commands sequentially within a single invocation when
@@ -220,10 +237,20 @@ COMMANDS=()
 [ "$NEED_FOLLOWUP" = "1" ] && COMMANDS+=("/follow-up all")
 [ "$NEED_DIGEST" = "1" ]   && COMMANDS+=("/digest")
 
+CLAUDE_RAN_SUCCESSFULLY=0
 if [ "${#COMMANDS[@]}" -gt 0 ]; then
     label=$(IFS='+'; echo "${COMMANDS[*]}" | sed 's| all||g; s|/||g')
     prompt=$(IFS=$'\n'; printf 'Run these in sequence:\n%s\n\nEach command has its own internal checks and will skip cleanly if nothing applies.' "${COMMANDS[*]}")
-    run_claude "$label" "$prompt"
+    if run_claude "$label" "$prompt"; then
+        CLAUDE_RAN_SUCCESSFULLY=1
+    fi
+fi
+
+# Record the current Claude Code version only after a successful run. If the run failed
+# (auth, timeout, permission prompt, transient outage), leave CLAUDE_VERSION_FILE stale so
+# the version-change Slack alert at the top of the script re-fires on the next cycle.
+if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
+    echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
 fi
 
 log "Done."

@@ -87,6 +87,9 @@ set -euo pipefail
 versions_dir="$HOME/.local/share/claude/versions"
 symlink="$HOME/.local/bin/claude"
 tcc_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+log_file="$HOME/Briefings/scheduler.log"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M')] claude-prune-versions: $1" >> "$log_file" 2>/dev/null || true; }
 
 [[ -d "$versions_dir" ]] || exit 0
 [[ -L "$symlink" ]] || exit 0
@@ -101,18 +104,28 @@ while IFS= read -r f; do
 done < <(find "$versions_dir" -maxdepth 1 -type f ! -name "$current" 2>/dev/null)
 
 # Remove orphaned TCC rows whose path lives under the Claude versions dir.
-# Bounded scope — only matches stale Claude binaries, no other TCC entries.
+# Bounded scope: `client_type = 1` restricts to path-based entries (not bundle IDs),
+# and equality on `client` only matches the specific stale binary path. No other TCC
+# entries are touched.
 if [[ -f "$tcc_db" ]] && command -v sqlite3 >/dev/null 2>&1; then
     for path in "${stale_paths[@]+"${stale_paths[@]}"}"; do
         escaped="${path//\'/\'\'}"
-        sqlite3 "$tcc_db" "DELETE FROM access WHERE client = '$escaped';" 2>/dev/null || true
+        err=$(sqlite3 "$tcc_db" "DELETE FROM access WHERE client = '$escaped' AND client_type = 1;" 2>&1)
+        rc=$?
+        if [[ $rc -ne 0 ]]; then
+            # Common causes: TCC.db locked by tccd or System Settings (transient,
+            # retried next session) / Full Disk Access not granted to this process
+            # (persistent, requires user action). Both leave the binary cleanup intact
+            # below; only orphan-row removal degrades.
+            log "WARN: sqlite3 DELETE failed for $path (rc=$rc): $err"
+        fi
     done
 fi
 
 find "$versions_dir" -maxdepth 1 -type f ! -name "$current" -delete 2>/dev/null || true
 ```
 
-The TCC cleanup step requires Full Disk Access on the parent process — granted by the Terminal grant in step 1. If FDA isn't in place, the sqlite3 line is a silent no-op and only the binary cleanup runs.
+The TCC cleanup step requires Full Disk Access on whatever process actually runs the SessionStart hook. In the typical install the hook is registered in `~/.claude/settings.json` so it runs under Claude Code, which means **Claude Code itself needs FDA** — not just Terminal. If FDA is missing, the sqlite3 call fails with a logged warning and only the binary cleanup runs (next launch of a Claude version still prompts, but stale rows do not accumulate).
 
 Then add a SessionStart hook to `~/.claude/settings.json` (merge into existing `hooks` if present):
 

@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-05-28 — Step 6 state file now includes empty last_processed_msg field; dedup watermark consumed by commands/follow-up.md awaiting-digest branch to prevent duplicate done:/drop:/more:/send: re-firing on subsequent scheduler cycles. Previous: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
+<!-- version: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename (modelled on briefings_mcp/ledger.py:189-196); includes empty last_processed_msg field for the dedup watermark consumed by commands/follow-up.md awaiting-digest branch. Previous: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -292,7 +292,8 @@ MINE_IDS_JSON=$(python3 -c "import json,os; print(json.dumps(json.loads(os.envir
 OWED_IDS_JSON=$(python3 -c "import json,os; print(json.dumps(json.loads(os.environ['LEDGER_OUT'])['owed']))" | python3 -c "import sys,json; print(json.dumps([r['id'] for r in json.load(sys.stdin)]))")
 NUDGES_JSON='[{"to":"robert@example.com","subject":"Re: SC External Positioning","body":"Hi Robert,..."}]'  # replace with actual computed nudges
 
-cat >"$AWAITING_DIGEST" <<EOF
+TMP="${AWAITING_DIGEST}.tmp"
+cat >"$TMP" <<EOF
 thread_id: $THREAD_ID
 created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 mine: $MINE_IDS_JSON
@@ -300,8 +301,11 @@ owed: $OWED_IDS_JSON
 nudges: $NUDGES_JSON
 last_processed_msg:
 EOF
-chmod 600 "$AWAITING_DIGEST"
+chmod 600 "$TMP"
+mv "$TMP" "$AWAITING_DIGEST"
 ```
+
+Use the tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`. Never overwrite the file in place — a crash mid-write would truncate the JSON arrays and lose every action item the digest tracked. This is the same atomic shape that `commands/follow-up.md`'s Step 0 Step 6 watermark write uses for subsequent updates.
 
 The `mine` and `owed` arrays are JSON of UUIDs in **display order** (so `done: 1` resolves to `mine[0]`). The `nudges` array is JSON of `{to, subject, body}` records in display order (so `send: 1` resolves to `nudges[0]`).
 

@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-28 — adds last_processed_msg watermark to awaiting-reply and awaiting-digest state files; reply branches now filter by Gmail labelIds (INBOX without SENT) to skip bot's own messages, preventing duplicate expand:/quote:/more:/send: re-firing. Previous: Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-05-28 — adds last_processed_msg watermark to awaiting-reply and awaiting-digest state files; reply branches now gate on From-address equality with $MY_EMAIL (bot and user share one Gmail account so labelIds cannot disambiguate) and use the watermark to skip already-processed user replies, preventing duplicate expand:/quote:/more:/send: re-firing. Previous: Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -82,38 +82,37 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
 4. **Identify the LAST message in the messages array** (highest index). Get its ID. Do NOT scan earlier messages or search across the whole thread for keywords — only the most recent message matters.
 
-   **Watermark check (dedup guard).** If `last_processed_msg` is set in the state file AND matches that last-message ID, we already saw this on a prior cycle — SKIP silently. Do not read, do not process, do not reply.
+   **Watermark check (dedup guard).** If `last_processed_msg` is present in the state file, non-empty, AND exactly equals this last-message ID — SKIP silently. Do not read, do not process, do not reply. An empty or missing `last_processed_msg` does NOT match — treat absent watermarks as "no prior processing".
 
    Otherwise read the message:
    ```bash
    gws gmail +read --message-id "[last_message_id]"
    ```
 
-   **Distinguish user reply from bot's own past message** by the `From` header (the bot and the user share the same Gmail account, so `labelIds` cannot disambiguate — both have `SENT`).
-   - Bot-sent messages: `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — bare email with no display name text before the angle brackets.
-   - User replies: `From: Mark McDermott <mark@screencloud.io>` — display name text precedes the angle brackets, added automatically by macOS Mail / Gmail web / mobile clients.
+   **Authorization check (sender identity).** Parse the email address out of the `From` header (the text inside `<…>`, or the bare email if no angle brackets are present). Compare against `$MY_EMAIL` from `~/.briefings_config` (case-insensitive). If the addresses do NOT match, this message is from a third party — someone CC'd on the thread, a reply-all from a meeting attendee, or a stray external sender. Set the state-file watermark per Step 5b with `last_processed_msg: <last_message_id>`, log `"Awaiting-reply skipped for [meeting] — From address <addr> is not $MY_EMAIL"`, and SKIP. Do not process, do not reply. **A non-matching From must never reach the keyword parser** — that is what would otherwise let any thread participant drive `expand:`/`quote:` against the transcript.
 
-   If From has no display name text → this is the bot's own past send (a prior `expand:`/`quote:`/clarification response). Update the state file with `last_processed_msg: <last_message_id>`, write it, and SKIP. Do not act, do not reply. The watermark prevents the same skip evaluation on the next cycle.
+   **Bot-vs-user disambiguation.** Address matches `$MY_EMAIL`; now distinguish the user's own mail-client reply from the bot's own past send. The bot uses `gws gmail +send`, which produces `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — bare email, no display-name text before the angle brackets. The user's mail client (macOS Mail, Gmail web, mobile) automatically prepends a display name: `From: Mark McDermott <mark@screencloud.io>`. (`labelIds` cannot disambiguate because bot and user share one Gmail account — both messages get `SENT`.)
+   - If From has NO display-name text → bot's own past send. Set watermark per Step 5b with `last_processed_msg: <last_message_id>` and SKIP.
+   - If From has display-name text → real user reply. Continue to Step 5.
 
-   If From has display name text → continue to Step 5 with this as the user reply.
+   **Audit trail for skipped intermediate replies.** If the prior `last_processed_msg` was non-empty and at least one message in the array between that watermark and the last-message also passes the From/display-name checks (an earlier user reply that arrived between scheduler cycles and was superseded before being processed), log each one: `"WARN: Awaiting-reply for [meeting] skipped intermediate user reply <message_id> — processing only the latest"`. The latest reply is still processed; this is informational so dropped intent is visible in scheduler.log.
 
 5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows). Match against:
 
-   - `cancel` / `skip` / `no` / `done` — delete the awaiting-reply file. Log `"Awaiting-reply cancelled by user for [meeting]"`. Done.
+   - `cancel` / `skip` / `no` / `done` — delete the awaiting-reply file. Log `"Awaiting-reply cancelled by user for [meeting]"`. Done. (No watermark write — the file is gone.)
 
-   - `extend` / `wait` / `more time` — rewrite the state file with `created_at: <now>` AND `last_processed_msg: <user_reply_message_id>`. All other fields unchanged. Log `"Awaiting-reply extended for [meeting] — 30-day clock reset"`. Done.
+   - `extend` / `wait` / `more time` — rewrite the state file per Step 5b with `created_at: <now>` (all other fields unchanged). Log `"Awaiting-reply extended for [meeting] — 30-day clock reset"`. Done.
 
-   - `expand: <request>` — the most powerful keyword. The user is asking for a focused re-run against the transcript with a specific ask:
+   - `expand: <request>` — focused re-run against the transcript:
      1. Fetch the transcript text from `transcript_source` using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
-     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Update the state file with `last_processed_msg: <user_reply_message_id>` (leave all other fields unchanged). Log a one-line WARN.
-     3. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more (e.g. "expand: write a 5-page document"). Format the output as plain prose or short bulleted lists — match the spirit of the original ask. Don't add scaffolding the user didn't ask for (no executive summaries, table of contents, or meta-commentary).
+     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Log a one-line WARN.
+     3. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more. Format as plain prose or short bulleted lists — match the spirit of the ask. Don't add scaffolding (no executive summaries, table of contents, or meta-commentary).
      4. Send the result as an email reply to the same thread: `gws gmail +send --thread-id "$thread_id" --subject "Re: Follow-up: [meeting]" --body "$RESULT_HTML" --html`. Also Slack-mirror if `~/.slack_webhook` exists.
-     5. **Update the state file with `last_processed_msg: <user_reply_message_id>`** (all other fields unchanged). This is the dedup guard — the next cycle's Step 4 watermark check will see this user reply's ID and skip. Without it the same reply re-fires every 15 minutes.
-     6. Log `"Expand request handled for [meeting]: [first 60 chars of request]"`.
+     5. Log `"Expand request handled for [meeting]: [first 60 chars of request]"`.
 
    - `quote: <topic>` — extract direct quotes:
      1. Fetch the transcript text the same way as `expand:`.
-     2. If fetch fails, same graceful "transcript not available" reply. Update the state file with `last_processed_msg: <user_reply_message_id>`.
+     2. If fetch fails, same graceful "transcript not available" reply.
      3. Otherwise, scan the transcript for 3–6 direct quotes where speakers discuss or reference `<topic>`. Match fuzzy (substring + semantic). Output format:
         ```
         Quotes about "[topic]" from [meeting]:
@@ -122,12 +121,34 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
         > Speaker name: "quoted text"
         ```
-        If fewer than 3 quotes match the topic, say so honestly: "Only 2 direct quotes found about '<topic>'; the meeting may not have covered it deeply."
-     4. Send as email reply + Slack mirror, same as `expand:`.
-     5. **Update the state file with `last_processed_msg: <user_reply_message_id>`** (all other fields unchanged). Same dedup guard as `expand:`.
-     6. Log `"Quote request handled for [meeting]: [topic]"`.
+        If fewer than 3 quotes match, say so honestly.
+     4. Send as email reply + Slack mirror.
+     5. Log `"Quote request handled for [meeting]: [topic]"`.
 
-   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. **Update the state file with `last_processed_msg: <user_reply_message_id>`** so the same unrecognized reply doesn't trigger another clarification next cycle. Log `"Unrecognized reply for [meeting]: <first line>"`.
+   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. Log `"Unrecognized reply for [meeting]: <first line>"`.
+
+5b. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196` (`update_commitment_state`'s rewrite shape — same single-writer guarantee applies here, with the lock held by `scripts/scheduler.sh`):
+
+   ```bash
+   umask 077
+   TMP="${AWAITING_FILE}.tmp"
+   cat >"$TMP" <<EOF
+   thread_id: $THREAD_ID
+   meeting: $MEETING
+   slug: $SLUG
+   transcript_source: $TRANSCRIPT_SOURCE
+   created_at: $CREATED_AT
+   last_processed_msg: $USER_REPLY_MESSAGE_ID
+   EOF
+   chmod 600 "$TMP"
+   mv "$TMP" "$AWAITING_FILE"
+   ```
+
+   Never overwrite the state file in place with `cat > $AWAITING_FILE`. A crash mid-write would truncate `thread_id` / `transcript_source` / `created_at` and leave the next cycle unable to act on the meeting at all. The tmp+rename pattern is atomic on POSIX: either the new file fully exists or the old one does.
+
+   This single write site covers `extend`, `expand:`, `quote:`, and the unrecognized-keyword branch. Every keyword that leaves the state file in place flows through Step 5b — there is no per-branch watermark write. If a future keyword is added, the watermark write is automatic provided the branch doesn't delete the file.
+
+   **Trade-off (ordering of external sends vs watermark write):** Step 5 sends its email reply BEFORE Step 5b writes the watermark. If a crash occurs between send and watermark, the next cycle will re-process the same user reply and send a duplicate reply. The recipient of the reply is the user themselves (the bot replies on the same thread to `$MY_EMAIL`) — duplicate noise, not data loss. This trade-off favors "always deliver the reply" over "never duplicate"; reversing it would risk silent drops in the more common crash mode.
 
 6. Process every awaiting-reply file before falling through to Step 1.
 
@@ -160,23 +181,27 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
 4. **Identify the LAST message in the messages array** (highest index). Get its ID. Do not scan earlier messages.
 
-   **Watermark check (dedup guard).** If `last_processed_msg` is set AND matches that last-message ID, we already saw this on a prior cycle — SKIP silently. Do not read, process, ack, or fire nudges.
+   **Watermark check (dedup guard).** If `last_processed_msg` is present, non-empty, AND exactly equals this last-message ID — SKIP silently. Do not read, process, ack, or fire nudges. An empty or missing `last_processed_msg` does NOT match.
 
    Otherwise read it via `gws gmail +read --message-id "[last_message_id]"`.
 
-   **Distinguish user reply from bot's own past ack** by the `From` header (same caveat as the awaiting-reply branch — both share the user's Gmail account, so `labelIds` cannot disambiguate).
+   **Authorization check (sender identity).** Parse the email address out of the `From` header (text inside `<…>`, or bare email if no brackets). Compare against `$MY_EMAIL` (case-insensitive). If addresses do NOT match, set the watermark per Step 6 to this message ID, log `"Awaiting-digest skipped — From address <addr> is not $MY_EMAIL"`, and SKIP. **A non-matching From must never reach the keyword parser** — that is what would otherwise let any thread participant trigger `send: N` (firing pre-drafted nudges to external recipients) or `done:`/`drop:` (mutating the ledger).
+
+   **Bot-vs-user disambiguation** (address matches `$MY_EMAIL` — distinguish user reply from bot ack):
    - Bot-sent: `From: mark@screencloud.io` or `From: <mark@screencloud.io>` — no display name.
-   - User reply: `From: Mark McDermott <mark@screencloud.io>` — display name present.
+   - User reply: `From: Mark McDermott <mark@screencloud.io>` — display name text precedes the angle brackets.
 
-   If From has no display name → this is the bot's own prior ack. Update state file with `last_processed_msg: <last_message_id>`, write it, SKIP. Do not act.
+   If From has no display-name text → bot's own prior ack. Set watermark per Step 6 with `last_processed_msg: <last_message_id>` and SKIP. Do not act.
 
-   If From has display name → continue to Step 5 with this as the user reply.
+   If From has display-name text → continue to Step 5 with this as the user reply.
+
+   **Audit trail for skipped intermediate replies.** Same shape as the awaiting-reply branch: if the prior `last_processed_msg` was non-empty and earlier messages in the array also pass the From/display-name checks (user replies superseded before processing), log each one as `"WARN: Awaiting-digest skipped intermediate user reply <message_id> — processing only the latest"`.
 
 5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines). Lowercase the keyword prefix; preserve case in any argument that follows. Match against:
 
-   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop). (No watermark write — the file is gone.)
+   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop). (No watermark write — file is gone.)
 
-   - `extend` / `wait` / `more time` → rewrite the state file with `created_at: <now>` AND `last_processed_msg: <user_reply_message_id>`, all other fields unchanged. Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
+   - `extend` / `wait` / `more time` → rewrite the state file per Step 6 with `created_at: <now>` (all other fields unchanged). Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
 
    - `done: N[, M, ...]` — for each index N (1-based), look up `mine[N-1]` (the UUID). Call `briefings_mcp.ledger.update_commitment_state(uuid, "done")` for each. Then send one ack reply summarising the changes:
      ```
@@ -186,15 +211,37 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
      ```
      If an index is out of range, include a line: `Couldn't find item N — only X in this digest.` and continue with the in-range indices.
 
-   - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack `"Dropped: ..."`.
+   - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack `"Dropped: …"`.
 
    - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
 
-   - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). Send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`. Ack to the digest thread: `"Nudge sent to <to>."` If send fails, ack: `"Couldn't send nudge #N: <error>"`.
+   - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). **This branch reverses the normal send-then-watermark ordering.** Because the nudge goes to an EXTERNAL recipient (not the user's own thread), a double-fire would mean the recipient receives the same nudge twice — a real social cost that other keywords don't carry. Order of operations:
+     1. **First**, write the watermark per Step 6 with `last_processed_msg: <user_reply_message_id>`. This ensures the next cycle will skip even if step 2 below crashes mid-send.
+     2. **Then** send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`.
+     3. Ack to the digest thread: `"Nudge sent to <to>."` If send fails (step 2), ack: `"Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry."` — the watermark is already written, so explicit retry is the recovery path. This favors "may miss a nudge under crash, never duplicate" over "always send, may duplicate". Document this for the user in the ack so retry semantics are visible.
 
    - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
 
-6. **After any branch except `cancel`** (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` so the next cycle's Step 4 watermark check skips this reply. All other fields unchanged. Without this guard, `done:`/`drop:`/`more:`/`send:`/`extend`/unrecognized replies all re-fire on every 15-minute cycle until something else moves the thread.
+6. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
+
+   ```bash
+   umask 077
+   TMP="${AWAITING_DIGEST}.tmp"
+   cat >"$TMP" <<EOF
+   thread_id: $THREAD_ID
+   created_at: $CREATED_AT
+   mine: $MINE_IDS_JSON
+   owed: $OWED_IDS_JSON
+   nudges: $NUDGES_JSON
+   last_processed_msg: $USER_REPLY_MESSAGE_ID
+   EOF
+   chmod 600 "$TMP"
+   mv "$TMP" "$AWAITING_DIGEST"
+   ```
+
+   Never overwrite the state file in place. A crash mid-write would truncate `thread_id` / `mine` / `owed` / `nudges` and lose every action item the digest tracked. The tmp+rename pattern is atomic — either the new file fully exists or the old one does.
+
+   This is the single write site for the watermark across `extend`, `done:`, `drop:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 
@@ -616,12 +663,13 @@ fi
 
 Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. If `~/.slack_webhook` is not found, skip silently.
 
-**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal):
+**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write:
 
 ```bash
 umask 077
 AWAITING_REPLY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-slug.md
-cat >"$AWAITING_REPLY" <<EOF
+TMP="${AWAITING_REPLY}.tmp"
+cat >"$TMP" <<EOF
 thread_id: $THREAD_ID
 meeting: [Meeting Name]
 slug: YYYY-MM-DD-HHmm-slug
@@ -629,7 +677,8 @@ transcript_source: $TRANSCRIPT_SOURCE
 created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 last_processed_msg:
 EOF
-chmod 600 "$AWAITING_REPLY"
+chmod 600 "$TMP"
+mv "$TMP" "$AWAITING_REPLY"
 ```
 
 - `thread_id` ties subsequent replies back to the original follow-up email (Gmail thread).
