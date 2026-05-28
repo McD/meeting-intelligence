@@ -60,9 +60,9 @@ Replies to any follow-up email with `expand: <request>`, `quote: <topic>`, `canc
 
 ## macOS permission setup
 
-The scheduler runs Claude Code headlessly, so it cannot answer macOS permission dialogs. Two one-time setup steps stop those dialogs from ever blocking a run.
+The scheduler runs Claude Code headlessly via launchd, so it cannot answer macOS permission dialogs. There's no setup that eliminates these dialogs entirely — macOS keys TCC permissions to the binary file, so every Claude Code update creates a new binary that needs fresh approval. The steps below minimise the friction.
 
-**1. Grant your terminal app the broad TCC permissions.** Child processes inherit TCC from their parent, so once Terminal (or iTerm, Ghostty, Warp) is approved, every future `claude` binary it spawns is too. In System Settings → Privacy & Security, add your terminal to:
+**1. Grant your terminal app the broad TCC permissions.** This covers interactive `claude` runs (when you sign in, debug a failing scheduler cycle, or run `/briefing` by hand). Child processes inherit TCC from their parent, so once Terminal (or iTerm, Ghostty, Warp) is approved, every future `claude` binary it spawns is too. In System Settings → Privacy & Security, add your terminal to:
 
 - Full Disk Access
 - App Management
@@ -70,21 +70,49 @@ The scheduler runs Claude Code headlessly, so it cannot answer macOS permission 
 
 Restart the terminal app after granting.
 
-**2. Auto-prune old Claude Code versions.** The native installer drops every prior version at `~/.local/share/claude/versions/<version>` (~200MB each) and never removes them. macOS keys TCC permissions to the binary file, so each leftover triggers fresh prompts after upgrades. A small script plus a SessionStart hook clears stale binaries automatically.
+**Note: Terminal's grants do not cover the scheduler.** launchd-spawned processes don't inherit TCC from Terminal — their TCC parent is launchd itself. So the first time the scheduler runs after a Claude Code update, macOS will show a permission dialog (typically "<version> would like to access data from other apps"). Click Allow when you see it. If you miss the prompt, the scheduler will fail silently until you do — see `scheduler.log` for the failure. The scheduler posts a Slack heads-up when it detects a Claude Code version change so you know to expect this.
+
+If the same prompt re-appears for the same Claude Code version (i.e. you've clicked Allow but it keeps re-prompting on each 15-minute cycle), the TCC grant didn't stick — a known macOS quirk for launchd-spawned binaries. Two workarounds:
+- Open System Settings → Privacy & Security → App Management and confirm the entry is toggled on. Remove any stale duplicate entries from older Claude versions.
+- If it still re-prompts, add `/bin/bash` to App Management (broad but reliable — bash is the launchd entry point for the scheduler).
+
+**2. Auto-prune old Claude Code versions AND their TCC entries.** The native installer drops every prior version at `~/.local/share/claude/versions/<version>` (~200MB each) and never removes them. Each leftover binary leaves an orphaned macOS TCC permission entry that can re-trigger prompts for the scheduler. A small script plus a SessionStart hook clears both automatically.
 
 Save to `~/.local/bin/claude-prune-versions` and `chmod +x`:
 
 ```bash
 #!/bin/bash
 set -euo pipefail
+
 versions_dir="$HOME/.local/share/claude/versions"
 symlink="$HOME/.local/bin/claude"
+tcc_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+
 [[ -d "$versions_dir" ]] || exit 0
 [[ -L "$symlink" ]] || exit 0
+
 current="$(basename "$(readlink "$symlink")")"
 [[ -n "$current" ]] || exit 0
+
+# Snapshot stale paths BEFORE deleting binaries — needed to match TCC's `client` column.
+stale_paths=()
+while IFS= read -r f; do
+    stale_paths+=("$f")
+done < <(find "$versions_dir" -maxdepth 1 -type f ! -name "$current" 2>/dev/null)
+
+# Remove orphaned TCC rows whose path lives under the Claude versions dir.
+# Bounded scope — only matches stale Claude binaries, no other TCC entries.
+if [[ -f "$tcc_db" ]] && command -v sqlite3 >/dev/null 2>&1; then
+    for path in "${stale_paths[@]+"${stale_paths[@]}"}"; do
+        escaped="${path//\'/\'\'}"
+        sqlite3 "$tcc_db" "DELETE FROM access WHERE client = '$escaped';" 2>/dev/null || true
+    done
+fi
+
 find "$versions_dir" -maxdepth 1 -type f ! -name "$current" -delete 2>/dev/null || true
 ```
+
+The TCC cleanup step requires Full Disk Access on the parent process — granted by the Terminal grant in step 1. If FDA isn't in place, the sqlite3 line is a silent no-op and only the binary cleanup runs.
 
 Then add a SessionStart hook to `~/.claude/settings.json` (merge into existing `hooks` if present):
 
@@ -100,7 +128,7 @@ Then add a SessionStart hook to `~/.claude/settings.json` (merge into existing `
 }
 ```
 
-With both in place, the headless scheduler does not get blocked by permission prompts after Claude Code upgrades.
+With both in place, stale Claude Code versions and their orphaned TCC entries no longer accumulate. You'll still get one App Management prompt after each Claude Code upgrade (see note above) — click Allow once per upgrade and the scheduler resumes on the next 15-minute cycle.
 
 ## Layout
 

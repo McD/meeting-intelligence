@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-27 Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local). Previous: 2026-05-19 — extracted notify_slack/log helpers, dropped redundant gmail probe.
+# version: 2026-05-27 — version-change Slack alert now explicit about expecting an App Management prompt and clicking Allow. Previous: Phase 3 — adds NEED_DIGEST gate for the twice-weekly actions tracker (Mon and Thu at 10am local).
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -50,7 +50,7 @@ CURRENT_CLAUDE_VERSION=$("$CLAUDE" --version 2>/dev/null | head -1 || echo "unkn
 LAST_CLAUDE_VERSION=$(cat "$CLAUDE_VERSION_FILE" 2>/dev/null || echo "")
 if [ -n "$LAST_CLAUDE_VERSION" ] && [ "$CURRENT_CLAUDE_VERSION" != "$LAST_CLAUDE_VERSION" ]; then
     log "Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION"
-    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). If briefings start failing, open a terminal and run \`claude\` once interactively to confirm any new permission prompts."
+    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). macOS will show an App Management prompt on the next scheduler cycle — *click Allow when it appears*, otherwise briefings will fail silently until you do. If you miss it, open a terminal and run \`claude\` once interactively to clear any new permission prompts before the next cycle."
 fi
 echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
 
