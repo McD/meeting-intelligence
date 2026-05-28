@@ -111,6 +111,34 @@ def main() -> int:
         "skip_third_party",
         results,
     )
+    _check(
+        "CC'd meeting attendee replying-all with display name must NOT classify as process",
+        classify_message("Cathy Counterparty <cathy@partner-co.com>", MY, None, "msg-cc-attack"),
+        "skip_third_party",
+        results,
+    )
+    _check(
+        "third-party send: N attack on digest thread must NOT classify as process",
+        classify_message("Quentin Quoter <q@external.co>", MY, "msg-prior", "msg-send-attack"),
+        "skip_third_party",
+        results,
+    )
+
+    section("From-OK gate (heredoc parity check)")
+    # Mirrors the deterministic heredoc embedded in commands/follow-up.md Step 4:
+    # `address.lower() == my_email.lower()` is the sole condition for the auth gate.
+    # Drift between the heredoc and this assertion is exactly the regression we want to catch.
+
+    def _from_ok(header: str) -> str:
+        _, addr = parse_from_address(header)
+        return "1" if addr.lower() == MY.lower() else "0"
+
+    _check("FROM_OK=1 for matching bare address", _from_ok("you@example.com"), "1", results)
+    _check("FROM_OK=1 for matching address with display name", _from_ok("Mark <you@example.com>"), "1", results)
+    _check("FROM_OK=1 for matching address with case variance", _from_ok("YOU@EXAMPLE.COM"), "1", results)
+    _check("FROM_OK=0 for third-party plain", _from_ok("attacker@evil.com"), "0", results)
+    _check("FROM_OK=0 for third-party with display name", _from_ok("Mallory <mallory@evil.com>"), "0", results)
+    _check("FROM_OK=0 for empty header", _from_ok(""), "0", results)
 
     section("classify_message — bot's own send (skip_bot)")
     _check(
