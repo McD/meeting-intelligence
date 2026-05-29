@@ -66,7 +66,7 @@ tail -f ~/Briefings/scheduler.log
 
 A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending.
 
-**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
+**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `done-owed: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 
 ## Update
 
@@ -336,6 +336,7 @@ Each Yours item may also carry a `done?` confidence hint if smart pre-marking fo
 Reply to the digest email to update commitment state. The scheduler picks up replies every 15 minutes via a `~/Briefings/YYYY-MM-DD-1000-awaiting-digest.md` state file.
 
 - `done: 1, 3` — mark Yours items 1 and 3 as `state: "done"` in the ledger
+- `done-owed: 2` — mark Owed-to-you item 2 as `state: "done"` (use when Step 2's Slack pre-marking flagged it `*done?*` and you can confirm)
 - `more: 2` — keep Yours item 2 open, snooze to next digest (no state change, just logged)
 - `drop: 4` — mark Yours item 4 as `state: "dropped"`
 - `not-mine: 5` — disown Yours item 5; sets `owner` to `"unassigned"` and the item disappears from both sections of future digests (useful when extraction over-attributed an action to you)
@@ -345,9 +346,11 @@ Reply to the digest email to update commitment state. The scheduler picks up rep
 - `cancel` — drop the awaiting-digest thread (state file deleted, no further polling)
 - `extend` — reset the 30-day expiry clock on the awaiting-digest state file
 
-Each section is capped at 15 items per digest, newest first; the older overflow is kept in the ledger and counted in an italic "…and N more older items hidden" line. The cap shrinks naturally as you reply `done:` / `drop:` / `not-mine:` / `drop-owed:` and older items become visible.
+Each section is capped at 15 items per digest, newest first; the older overflow is kept in the ledger and counted in an italic "…and N more older items hidden" line. The cap shrinks naturally as you reply `done:` / `done-owed:` / `drop:` / `not-mine:` / `drop-owed:` and older items become visible.
 
-Each successful update gets a one-line acknowledgment reply in the same thread. Unrecognized replies get a one-line "didn't recognize that — try `done:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, or `extend`" response.
+Items may carry up to two best-effort annotations from Step 2's cross-source enrichment: `*done?*` when Gmail or Slack suggests the relevant person has already done the thing (works for both sections — your sent messages for Yours, the owner's Slack messages for Owed), and an indented italic `*Next: <event name> on <DD Mon>*` line when one of the item's attendees is on your calendar in the next 14 days. The `*done?*` mark is a hint, not a claim; use `done:` / `done-owed:` to confirm.
+
+Each successful update gets a one-line acknowledgment reply in the same thread. Unrecognized replies get a one-line "didn't recognize that — try `done:`, `done-owed:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, or `extend`" response.
 
 If the ledger has no open commitments on a Mon or Thu, the digest skips the email entirely and posts a single Slack notice ("Actions tracker: nothing open — clean slate for the week ahead."). No empty email lands in your inbox.
 

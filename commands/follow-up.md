@@ -255,6 +255,8 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    - `drop-owed: N[, M, ...]` — same shape as `drop:` but indexes into `owed[]` (the **Owed to you** section) rather than `mine[]`. For each index N (1-based), look up `owed[N-1]` (the UUID), call `update_commitment_state(uuid, "dropped")`. Ack `"Dropped from Owed: …"`. Use this for FYI items captured as commitments that aren't actually owed to the user. Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
 
+   - `done-owed: N[, M, ...]` — same shape as `done:` but indexes into `owed[]`. For each N, look up `owed[N-1]` and call `update_commitment_state(uuid, "done")`. Ack `"Marked Owed as done: …"`. Use this when Step 2's Slack pre-marking flagged an Owed item with `*done?*` and you can confirm the owner shipped it (or when you just learned independently). Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
+
    - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
 
    - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). **This branch reverses the normal send-then-watermark ordering.** Because the nudge goes to an EXTERNAL recipient (not the user's own thread), a double-fire would mean the recipient receives the same nudge twice — a real social cost that other keywords don't carry. Order of operations:
@@ -262,7 +264,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
      2. **Then** send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`.
      3. Ack to the digest thread: `"Nudge sent to <to>."` If send fails (step 2), ack: `"Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry."` — the watermark is already written, so explicit retry is the recovery path. This favors "may miss a nudge under crash, never duplicate" over "always send, may duplicate". Document this for the user in the ack so retry semantics are visible.
 
-   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
+   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`done-owed: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
 
 6. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
 
@@ -283,7 +285,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    Never overwrite the state file in place. A crash mid-write would truncate `thread_id` / `mine` / `owed` / `nudges` and lose every action item the digest tracked. The tmp+rename pattern is atomic — either the new file fully exists or the old one does.
 
-   This is the single write site for the watermark across `extend`, `done:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
+   This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 

@@ -137,23 +137,46 @@ Items whose `owner` is empty or literally `"unassigned"` (typically the result o
 
 ---
 
-## Step 2: Smart pre-marking for Yours (best-effort)
+## Step 2: Enrich items with cross-source signals (best-effort)
 
-For each item in `mine`, search Gmail sent items between its `created_at` and now for messages whose subject or body matches keywords from the commitment summary. If a likely match exists, flag the item with a `done?` confidence mark.
+For each item in **both** `mine` and `owed`, gather two best-effort signals before rendering: a `done?` confidence hint, and the next upcoming meeting where this item could be raised in person. Both are best-effort — the digest must ship even if every signal lookup fails.
 
-**Implementation**: for each Yours item, run a focused gws gmail search. Extract 2–3 key nouns from the commitment summary (e.g. "send pricing memo to Acme" → "pricing", "Acme") and search:
+Don't over-apply. The goal is to catch the obvious cases where the user has clearly already done the thing, the owner has clearly already shipped it, or the user has a natural moment coming up to act on it. Conservative wins — false positives erode trust in the digest faster than misses.
+
+### 2a. Done-detection via Gmail + Slack (`done_hint`)
+
+For each item, extract 2–3 key nouns from the commitment summary (e.g. "send pricing memo to Acme" → "pricing", "Acme") and check whether the relevant person has been writing about those topics in the window from `created_at` to now. If a credible match exists, set `done_hint: true`. Otherwise leave it `false`.
+
+**For `mine` items**, the relevant person is the user. Two sources:
+
+- **Gmail sent items** — `gws gmail search --params '{"userId": "me", "q": "in:sent after:YYYY/MM/DD <keywords>"}'` (slashes for Gmail's date syntax; substitute the commitment's `created_at` date and the extracted keywords).
+- **Slack** — invoke the `slack_search_public_and_private` MCP tool with a query that scopes to the user and the keywords, e.g. `from:@<user-handle> "<keyword>" after:<YYYY-MM-DD>`. The user's Slack handle is derivable from `MY_EMAIL`'s local-part in most ScreenCloud-style workspaces; if the handle lookup is ambiguous, search without `from:` and filter the first 2–3 results by author manually.
+
+If either source returns a message that genuinely corresponds to the action (read the first 2–3 results and use judgement — don't trust raw counts), set `done_hint: true`.
+
+**For `owed` items**, the relevant person is the commitment's `owner`. One source:
+
+- **Slack** — search for messages from the owner mentioning the keywords in the same window. Resolve the owner to a Slack handle via `slack_search_users` if needed, otherwise pass the name directly into the query. Gmail is not searched for owed items (the user only sees the owner's mail when CC'd, which is too narrow to be useful).
+
+If a credible match exists, set `done_hint: true` on the owed item too. The `*done?*` mark renders in the digest the same way for both sections; the user can then confirm via `done: N` (Yours) or `done-owed: N` (Owed).
+
+**Skip on error.** If gws is unavailable, if any MCP search errors out, or if the results are ambiguous, leave `done_hint: false` and continue. The pre-marking is informational; a missing signal is fine.
+
+### 2b. Upcoming-meeting cross-reference (`next_meeting`)
+
+Fetch the user's calendar events for the next 14 days in a single call:
 
 ```bash
-gws gmail search --params '{"userId": "me", "q": "in:sent after:YYYY/MM/DD pricing acme"}'
+gws calendar events list --params '{"calendarId": "primary", "timeMin": "<now ISO>", "timeMax": "<now+14d ISO>", "singleEvents": true, "orderBy": "startTime"}'
 ```
 
-(YYYY/MM/DD is the commitment's created_at date, slashes for Gmail's query syntax.)
+Then for each item in `mine` and `owed`, look for the soonest event whose attendees intersect the item's `attendees` (excluding the user themselves). Annotate the item with `next_meeting: {"name": "<event summary>", "date": "<YYYY-MM-DD>"}`.
 
-If the search returns any results, examine the first 2–3 messages briefly — does any actually correspond to this action? Use your judgement. If yes, set `done_hint: true` on the item. If no clear match or the search errors out, leave `done_hint: false`.
+For `owed` items specifically, prefer events whose attendee list includes the item's `owner` (resolve by email substring or display-name match against the event attendees). If no event matches the owner but other attendees of the commitment do match, fall back to the soonest of those — bringing the item up with anyone from the original meeting is better than waiting for the perfect attendee.
 
-**This is best-effort.** If gws is unavailable, if Gmail returns an error, or if you're uncertain, set `done_hint: false` and continue. The digest must ship even if pre-marking fails entirely.
+If no event in the next 14 days matches an item's attendees, set `next_meeting: null` for that item.
 
-Don't over-apply: the goal is to catch the ~30% of obvious cases where the user has clearly already done the thing. Conservative is better than noisy.
+**Skip on error.** If the calendar fetch fails or returns nothing, leave every item's `next_meeting: null` and continue. One calendar call covers all items; do not retry per-item.
 
 ---
 
@@ -194,11 +217,13 @@ Save to `$DIGEST_FILE` (from Step 0), then `chmod 600` the file.
 
 ## Yours
 1. *(open N days)* <summary> — <meeting name>, <DD Mon>
+   *Next: <event name> on <DD Mon>*
 2. *done?* *(open N days)* <summary> — <meeting name>, <DD Mon>
 3. *(open N days, due DD Mon)* <summary> — <meeting name>, <DD Mon>
 
 ## Owed to you
-1. *(open N days)* **<Owner first name>** — <summary> — <meeting name>, <DD Mon>
+1. *done?* *(open N days)* **<Owner first name>** — <summary> — <meeting name>, <DD Mon>
+   *Next: <event name> on <DD Mon>*
 2. *(open N days)* **<Owner first name>** — <summary> — <meeting name>, <DD Mon>
 
 ## Nudge drafts
@@ -214,6 +239,7 @@ Save to `$DIGEST_FILE` (from Step 0), then `chmod 600` the file.
 
 Reply to update:
 - `done: 1, 3` — mark Yours items complete in the ledger
+- `done-owed: 2` — mark Owed-to-you item 2 complete (use when `*done?*` flagged it and you can confirm)
 - `more: 2` — keep open, snooze to next digest
 - `drop: 4` — abandon a Yours item
 - `not-mine: 5` — disown a Yours item (it shouldn't have been attributed to you)
@@ -223,6 +249,8 @@ Reply to update:
 - `cancel` — drop this digest thread
 - `extend` — reset the 30-day reply window
 ```
+
+**`*Next:*` rendering rule.** When an item carries a `next_meeting` annotation from Step 2b, render one indented italic line immediately below the item: `   *Next: <event name> on <DD Mon>*`. The three-space indent aligns under the item's text (not under the number). Omit the line entirely when `next_meeting` is null. The italic styling is rendered by the Step 5 markdown-to-HTML pass (the `*…*` runs match its `<i>` regex).
 
 **Overflow line per section.** After the last numbered item in `## Yours` (and again after `## Owed to you`), if the corresponding `mine_hidden` / `owed_hidden` value is greater than zero, render one italic line:
 
@@ -249,7 +277,7 @@ PYEOF
 
 The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N days, due DD Mon)*` if due is set. If the due date is in the past, use `*(open N days, OVERDUE since DD Mon)*` to call it out.
 
-**`done?` rendering**: prepend `*done?*` *after* the number and dot, before the parenthesized age. Renders as: `2. *done?* *(open 5 days)* Draft 5-page state-of-industry document — SC External Positioning, 20 May`.
+**`done?` rendering**: prepend `*done?*` *after* the number and dot, before the parenthesized age. Renders as: `2. *done?* *(open 5 days)* Draft 5-page state-of-industry document — SC External Positioning, 20 May`. The same rendering applies to both Yours items (where `done_hint` came from Gmail or Slack matches for the user) and Owed items (where `done_hint` came from Slack matches for the owner).
 
 ---
 
@@ -356,7 +384,7 @@ Use the tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`. Never 
 
 The `mine` and `owed` arrays are JSON of UUIDs in **display order** (so `done: 1` resolves to `mine[0]`). The `nudges` array is JSON of `{to, subject, body}` records in display order (so `send: 1` resolves to `nudges[0]`).
 
-`last_processed_msg` is empty initially. `commands/follow-up.md`'s awaiting-digest branch sets it to the Gmail message ID of every user reply it acts on (`done:`/`drop:`/`not-mine:`/`drop-owed:`/`more:`/`send:`/`extend`/unrecognized), preventing the same reply from being re-processed on the next scheduler cycle. Without this watermark a `more: 2` reply would re-ack on every 15-minute tick until something else moves the thread.
+`last_processed_msg` is empty initially. `commands/follow-up.md`'s awaiting-digest branch sets it to the Gmail message ID of every user reply it acts on (`done:`/`done-owed:`/`drop:`/`not-mine:`/`drop-owed:`/`more:`/`send:`/`extend`/unrecognized), preventing the same reply from being re-processed on the next scheduler cycle. Without this watermark a `more: 2` reply would re-ack on every 15-minute tick until something else moves the thread.
 
 If `$THREAD_ID` is empty (email send didn't return a threadId), log `"WARN: digest sent but threadId not captured — awaiting-digest state skipped for $(date +%Y-%m-%d)"` to `~/Briefings/scheduler.log` and skip the state file. The digest itself is still delivered; only the reply-keyword loop is degraded.
 
@@ -368,4 +396,4 @@ Tell the user:
 - The digest was generated for today
 - N yours / M owed (and K with `done?` hints if any)
 - Path to the digest file
-- That reply keywords (`done:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, `extend`) will be picked up on the next scheduler cycle via the awaiting-digest state file
+- That reply keywords (`done:`, `done-owed:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, `extend`) will be picked up on the next scheduler cycle via the awaiting-digest state file

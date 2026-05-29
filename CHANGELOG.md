@@ -24,6 +24,22 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   an italic "…and N more older items hidden" line so suppressed items remain
   visible-by-inference. Older items become visible as you prune the recent
   ones with `done:` / `drop:` / `not-mine:` / `drop-owed:`.
+- **Slack done-detection** — `/digest` Step 2's pre-marking now also searches
+  Slack via the `slack_search_public_and_private` MCP tool, in addition to
+  the existing Gmail sent-items search. Applies to both `mine` items (looks
+  for the user's own Slack messages mentioning the commitment's keywords) and
+  `owed` items (looks for the owner's Slack messages). Mirrors the cross-
+  source signal that `/briefing` already uses for attendee context.
+- **Upcoming-meeting cross-reference** — `/digest` Step 2 now fetches the
+  user's calendar for the next 14 days in one call, and annotates each item
+  with `next_meeting: {name, date}` when one of its attendees has an event
+  with the user in that window. Renders as an indented italic
+  `*Next: <event> on <DD Mon>*` line below the item, giving the user a
+  natural in-person moment to act on it.
+- **`done-owed: N` digest reply keyword** — symmetric counterpart to `done: N`
+  for the Owed-to-you section. Pairs with the new Slack pre-marking: the
+  digest flags `*done?*` on an Owed item, the user confirms via
+  `done-owed: N`, ledger entry transitions to `state: "done"`.
 - **`docs/README.md`** — short note framing the `docs/` folder as build-time
   working notes rather than authoritative product documentation.
 
