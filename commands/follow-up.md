@@ -383,6 +383,15 @@ Only meetings with no existing follow-up or awaiting file (or with force mode se
 
 If no qualifying meetings exist, say so and stop.
 
+### Establish per-meeting variables
+
+For each qualifying meeting that proceeds to Step 2, establish these shell variables once at the end of Step 1 so they are reachable from Step 3 (audit log), Step 4 (ledger append), and beyond — single source of truth, no recomputation downstream:
+
+- **`SOURCE_MEETING`** — the meeting slug in the form `YYYY-MM-DD-HHmm-<kebab-slug>` derived from the event start time and a kebab-cased compression of the event summary. This is the same slug used for the dedup check above (`YYYY-MM-DD-HHmm-followup-SLUG.md` is `${SOURCE_MEETING}` with `-followup-` inserted). Step 4's append heredoc and Step 3's audit log both consume this variable.
+- **`COACHING_MODE`** — read the calendar event title (the event's `summary` field as returned by `gws calendar events list`). Parse it for any of these meeting-class tags, case-insensitive, substring-based (`[Coaching]`, `[ coaching ]`, and `[coaching]` all match): `[coaching]`, `[debrief]`, `[1:1-introspective]`, `[therapy]`. If any matches, AND `[capture-actions]` is **not** also present in the title, set `COACHING_MODE=1`. Otherwise set `COACHING_MODE=0`. The `[capture-actions]` override beats the meeting-class tag — it lets the user keep one real action surfaced from an otherwise coaching-shaped meeting.
+
+These variables are per-meeting; if multiple qualifying meetings exist, derive a fresh `SOURCE_MEETING` and `COACHING_MODE` for each before processing it through Steps 2-6.
+
 ---
 
 ## Step 2: Find the transcript
@@ -472,6 +481,69 @@ Read the full transcript document.
 
 **Transcript format notes**: Gemini transcripts are plain prose with speaker labels. Teams transcripts have the format `Name  0:01  text`. MacWhisper transcripts are plain text, often with speaker labels. Extract actions from all formats the same way.
 
+### Coaching-mode short-circuit (Action items only)
+
+Read `COACHING_MODE` from Step 1. If `COACHING_MODE=1`, skip action-item extraction entirely — do not run the four gates, do not enumerate candidates the gates would have evaluated. Emit exactly one audit record to `~/Briefings/${SOURCE_MEETING}-followup-audit.jsonl` (mode 600; see "Four-gate audit log" below for the writer pattern) with the shape:
+
+```json
+{"timestamp": "<ISO>", "source_meeting": "<SOURCE_MEETING>", "candidate_summary": "<all candidates suppressed by policy>", "kept": false, "gate_dropped": null, "reason": "coaching-mode-short-circuit"}
+```
+
+After emitting that single record, **continue with the rest of Step 3 normally** — still extract the 1-sentence summary, Key decisions, Open questions, Notable threads, and Counterparty read. The short-circuit suppresses only the **Action items** bullet below; everything else (decisions, summary, transcript link, etc.) still flows through Steps 4-6 as usual. The user still gets a follow-up email; the actions tracker just stays clean.
+
+Skip the "Extract:" list's **Action items** bullet entirely when `COACHING_MODE=1`. In particular, do not produce a `**You** — ...` action list in the rendered follow-up, and do not pass any commitment items into Step 4's `ITEMS_JSON` (decisions still go through `ITEMS_JSON` as `type: "decision"` entries).
+
+### Four-gate audit log (always, unless coaching-mode short-circuited above)
+
+For every candidate action you consider when running the four gates below — **including ones the gates drop** — emit one JSONL record to `~/Briefings/${SOURCE_MEETING}-followup-audit.jsonl`. Record shape:
+
+```json
+{"timestamp": "<ISO>", "source_meeting": "<SOURCE_MEETING>", "candidate_summary": "<first 140 chars of the candidate's phrasing>", "kept": <bool>, "gate_dropped": <1|2|3|4|null>, "reason": "<short>"}
+```
+
+- For a **kept** candidate (passed all four gates): `{kept: true, gate_dropped: null, reason: "passed-all-gates"}`.
+- For a **dropped** candidate: `{kept: false, gate_dropped: N, reason: "<gate-name>"}` where N is 1-4 and the gate-name is one of `concrete-doer`, `done-state`, `deliverable-or-decision-or-interaction`, `worth-chasing-for-user`.
+
+The emphasis is **completeness, not curation**: every candidate you considered before the gates fired should produce a record, even ones obviously not action items. The audit log is the data feed for SC4 and SC5 in the requirements doc; under-reporting drops makes drift invisible.
+
+Write the records via a Python heredoc following the same shape as Step 4's `APPEND_OUT=$(...)` invocation below. Use `_restricted_umask` from `briefings_mcp.ledger` so the file lands at mode 600 (audit records contain transcript-derived candidate summaries that may include strategic or personal content; mode 600 matches `~/.briefings/decisions.jsonl`). Append, do not truncate — multiple force-regenerations of the same meeting accumulate records, each with a distinct `timestamp`.
+
+```bash
+AUDIT_FILE="$HOME/Briefings/${SOURCE_MEETING}-followup-audit.jsonl"
+SOURCE_MEETING="$SOURCE_MEETING" AUDIT_FILE="$AUDIT_FILE" \
+CANDIDATES_JSON='[...]' \
+python3 <<'PYEOF'
+import os, json
+from datetime import datetime, timezone
+from briefings_mcp.ledger import _restricted_umask
+
+source_meeting = os.environ["SOURCE_MEETING"]
+audit_file = os.environ["AUDIT_FILE"]
+candidates = json.loads(os.environ["CANDIDATES_JSON"])
+
+now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+with _restricted_umask():
+    with open(audit_file, "a", encoding="utf-8") as f:
+        for c in candidates:
+            record = {
+                "timestamp": now_iso,
+                "source_meeting": source_meeting,
+                "candidate_summary": (c.get("summary") or "")[:140],
+                "kept": bool(c.get("kept")),
+                "gate_dropped": c.get("gate_dropped"),  # 1-4 or None
+                "reason": c.get("reason") or "",
+            }
+            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+import os as _os; _os.chmod(audit_file, 0o600)
+PYEOF
+```
+
+If the audit write errors out, log a one-line WARN to `~/Briefings/scheduler.log` (`"WARN: audit-log write failed for [meeting]: <error>"`) and **continue**. The audit log is informational; it must not block the follow-up itself.
+
+---
+
 Extract:
 - **1-sentence meeting summary** — what was this meeting about
 - **Key decisions made** — anything agreed or resolved
@@ -517,10 +589,10 @@ For each item, infer **1–3 short topic tags** (e.g. `"pricing"`, `"q3-plan"`, 
 
 **is_external** — compute `true` if any attendee has an email outside `$COMPANY_DOMAIN`, `false` otherwise. Step 5 uses this to gate the `## Counterparty read` section. (The Phase 1 high-stakes flag and its inputs — verdict, attendee_history_count — were removed in Phase 2 along with the Why? capture loop.)
 
-Build the items list and append in one Python invocation. The heredoc pattern mirrors `scripts/scheduler.sh` line 81:
+Build the items list and append in one Python invocation. `SOURCE_MEETING` was established in Step 1 (single source of truth — see "Establish per-meeting variables") and is reused here unchanged. The heredoc pattern mirrors `scripts/scheduler.sh` line 81:
 
 ```bash
-APPEND_OUT=$(SOURCE_MEETING="YYYY-MM-DD-HHmm-slug" \
+APPEND_OUT=$(SOURCE_MEETING="$SOURCE_MEETING" \
              ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
              ITEMS_JSON='[
                {"type":"commitment","summary":"Send pricing memo to Acme","topics":["pricing","acme"],"owner":"You","due":"2026-05-26","state":"open"},

@@ -43,6 +43,7 @@ fi
 # Mondays before 09:16 (one cycle window) — keep ~Briefings/ from growing unbounded.
 if [ "$(date +%u)" = "1" ] && [[ "$(date +%H:%M)" < "09:16" ]]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
+    find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
     log "Cleaned up files older than 30 days."
 fi
 
