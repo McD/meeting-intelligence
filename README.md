@@ -66,7 +66,7 @@ tail -f ~/Briefings/scheduler.log
 
 A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending.
 
-**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `done-owed: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
+**Reply keywords on briefing, follow-up, and digest emails** — `research: <query>`, `cancel`, `extend` (every email); plus `expand: <request>`, `quote: <topic>` (follow-up only — both require a transcript); plus `done: N`, `done-owed: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N` (digest only). All are picked up by the next scheduler cycle from the awaiting-reply / awaiting-digest state file written when the email was sent. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 
 ## Update
 

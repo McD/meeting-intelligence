@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-28c — Authorization check in Step 4 (both branches) is now a deterministic Python heredoc that invokes briefings_mcp.replies.parse_from_address rather than asking the LLM to parse the From header itself. Closes interpretation-drift risk on the security guard. Bot-vs-user and watermark checks remain prose (lower blast radius if they drift). Previous: 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword (web research via WebSearch/WebFetch — works on briefing threads where transcript_source is empty); expand:/quote: now respond gracefully when transcript_source is empty (suggesting research: instead); awaiting-digest dispatcher also gains `research:`. Reply footer in follow-up email body lists `research:`. Previous: 2026-05-28c — Authorization check in Step 4 (both branches) is now a deterministic Python heredoc that invokes briefings_mcp.replies.parse_from_address rather than asking the LLM to parse the From header itself. Earlier: 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -122,10 +122,18 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    - `expand: <request>` — focused re-run against the transcript:
      1. Fetch the transcript text from `transcript_source` using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
-     2. If the fetch fails (404, file missing, empty `transcript_source`), send an email reply to `$thread_id` saying "Sorry — the original transcript is no longer available at `<transcript_source>`. Reply `cancel` to drop this thread." Log a one-line WARN.
+     2. If the fetch fails (404, file missing, or `transcript_source` is empty — which is the normal case for briefing-thread replies, since the meeting hasn't happened yet), send an email reply to `$thread_id` saying "`expand:` needs a meeting transcript, and this thread doesn't have one yet (either the meeting hasn't happened, or the original transcript is no longer reachable at `<transcript_source>`). Try `research: <query>` if you want web research instead, or `cancel` to drop this thread." Log a one-line WARN.
      3. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more. Format as plain prose or short bulleted lists — match the spirit of the ask. Don't add scaffolding (no executive summaries, table of contents, or meta-commentary).
      4. Send the result as an email reply to the same thread: `gws gmail +send --thread-id "$thread_id" --subject "Re: Follow-up: [meeting]" --body "$RESULT_HTML" --html`. Also Slack-mirror if `~/.slack_webhook` exists.
      5. Log `"Expand request handled for [meeting]: [first 60 chars of request]"`.
+
+   - `research: <query>` — web research on a topic, person, or company. Does **not** require a transcript; works on every awaiting-reply file (briefing, follow-up, or any future email type). Steps:
+     1. Parse `<query>` as everything after `research:`. Preserve case.
+     2. Use the `WebSearch` MCP tool with a query derived from `<query>` (and the meeting context from the state file's `meeting` field if helpful for disambiguation). If `<query>` includes one or more URLs, additionally fetch each via `WebFetch` and treat the page content as primary source.
+     3. Synthesize a 200–800 word response, prose-led. Lead with the most important claim; do not produce executive summaries or tables of contents. Cite sources inline as markdown links and include a final `Sources:` list of markdown links (matches the existing follow-up `expand:` shape).
+     4. Send the result as an HTML email reply to `$thread_id` using the markdown-to-HTML renderer from Step 6 of this file, so the look and feel matches every other outbound email from this system. Also Slack-mirror if `~/.slack_webhook` exists.
+     5. Log `"Research request handled for [meeting]: [first 60 chars of query]"`.
+     6. If WebSearch / WebFetch errors out, send a graceful reply: `"Sorry — couldn't run the research right now (<error>). Reply \`research: <query>\` to retry, or \`cancel\` to drop this thread."` and log a one-line WARN.
 
    - `quote: <topic>` — extract direct quotes:
      1. Fetch the transcript text the same way as `expand:`.
@@ -142,7 +150,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
      4. Send as email reply + Slack mirror.
      5. Log `"Quote request handled for [meeting]: [topic]"`.
 
-   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`cancel\`, or \`extend\`."`. Log `"Unrecognized reply for [meeting]: <first line>"`.
+   - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`research: <query>\`, \`cancel\`, or \`extend\`."`. Log `"Unrecognized reply for [meeting]: <first line>"`.
 
 5b. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196` (`update_commitment_state`'s rewrite shape — same single-writer guarantee applies here, with the lock held by `scripts/scheduler.sh`):
 
@@ -163,7 +171,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    Never overwrite the state file in place with `cat > $AWAITING_FILE`. A crash mid-write would truncate `thread_id` / `transcript_source` / `created_at` and leave the next cycle unable to act on the meeting at all. The tmp+rename pattern is atomic on POSIX: either the new file fully exists or the old one does.
 
-   This single write site covers `extend`, `expand:`, `quote:`, and the unrecognized-keyword branch. Every keyword that leaves the state file in place flows through Step 5b — there is no per-branch watermark write. If a future keyword is added, the watermark write is automatic provided the branch doesn't delete the file.
+   This single write site covers `extend`, `expand:`, `quote:`, `research:`, and the unrecognized-keyword branch. Every keyword that leaves the state file in place flows through Step 5b — there is no per-branch watermark write. If a future keyword is added, the watermark write is automatic provided the branch doesn't delete the file.
 
    **Trade-off (ordering of external sends vs watermark write):** Step 5 sends its email reply BEFORE Step 5b writes the watermark. If a crash occurs between send and watermark, the next cycle will re-process the same user reply and send a duplicate reply. The recipient of the reply is the user themselves (the bot replies on the same thread to `$MY_EMAIL`) — duplicate noise, not data loss. This trade-off favors "always deliver the reply" over "never duplicate"; reversing it would risk silent drops in the more common crash mode.
 
@@ -257,6 +265,8 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    - `done-owed: N[, M, ...]` — same shape as `done:` but indexes into `owed[]`. For each N, look up `owed[N-1]` and call `update_commitment_state(uuid, "done")`. Ack `"Marked Owed as done: …"`. Use this when Step 2's Slack pre-marking flagged an Owed item with `*done?*` and you can confirm the owner shipped it (or when you just learned independently). Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
 
+   - `research: <query>` — web research, same handler shape as the awaiting-reply branch's `research:` (see Step 5 of the awaiting-reply branch above). Use the `WebSearch` MCP tool with the query, optionally `WebFetch` any URLs in the query, synthesize a 200–800 word HTML response using the same renderer as the digest itself, send as a reply to the digest thread, and Slack-mirror if `~/.slack_webhook` exists. Log `"Research request handled for digest: [first 60 chars of query]"`.
+
    - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
 
    - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). **This branch reverses the normal send-then-watermark ordering.** Because the nudge goes to an EXTERNAL recipient (not the user's own thread), a double-fire would mean the recipient receives the same nudge twice — a real social cost that other keywords don't carry. Order of operations:
@@ -264,7 +274,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
      2. **Then** send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`.
      3. Ack to the digest thread: `"Nudge sent to <to>."` If send fails (step 2), ack: `"Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry."` — the watermark is already written, so explicit retry is the recovery path. This favors "may miss a nudge under crash, never duplicate" over "always send, may duplicate". Document this for the user in the ack so retry semantics are visible.
 
-   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`done-owed: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
+   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`done-owed: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`research: <query>\`, \`cancel\`, or \`extend\`."`. Leave state file.
 
 6. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
 
@@ -285,7 +295,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    Never overwrite the state file in place. A crash mid-write would truncate `thread_id` / `mine` / `owed` / `nudges` and lose every action item the digest tracked. The tmp+rename pattern is atomic — either the new file fully exists or the old one does.
 
-   This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
+   This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, `research:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 
@@ -594,6 +604,7 @@ Save to `~/Briefings/YYYY-MM-DD-HHmm-followup-slug.md`, then `chmod 600` the fil
 Reply to this thread to dig deeper:
 - `expand: <request>` — re-runs against the transcript (e.g. "expand: write up the industry overview as a one-pager")
 - `quote: <topic>` — pulls direct quotes about that topic
+- `research: <query>` — web research on a topic, person, or company (use this when you want external context, not transcript content)
 - `cancel` — drops the reply thread for this meeting
 - `extend` — keeps the thread open another 30 days
 ```
@@ -735,7 +746,7 @@ mv "$TMP" "$AWAITING_REPLY"
 - `thread_id` ties subsequent replies back to the original follow-up email (Gmail thread).
 - `transcript_source` is the URL or `file://` path captured in Step 2 (Phase 1). The awaiting-reply branch in Step 0 re-fetches the transcript from here when `expand:` or `quote:` keywords arrive — the transcript content itself is **not** stored on disk.
 - `created_at` drives the 30-day expiry. `extend` rewrites this to "now"; `cancel` deletes the file entirely.
-- `last_processed_msg` is empty initially. Step 0's awaiting-reply branch sets it to the Gmail message ID of every user reply it acts on (expand/quote/extend/unrecognized), preventing the same reply from being re-processed on the next 15-minute scheduler cycle.
+- `last_processed_msg` is empty initially. Step 0's awaiting-reply branch sets it to the Gmail message ID of every user reply it acts on (expand/quote/research/extend/unrecognized), preventing the same reply from being re-processed on the next 15-minute scheduler cycle.
 
 If `$TRANSCRIPT_SOURCE` is empty (rare — Phase 1's Step 2 captures it in all five transcript-search branches plus the Step 0 reply-as-transcript path), leave the field empty in the state file. The Step 0 awaiting-reply branch responds to `expand:` and `quote:` with a graceful "transcript no longer available" message in that case.
 

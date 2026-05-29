@@ -40,6 +40,28 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   for the Owed-to-you section. Pairs with the new Slack pre-marking: the
   digest flags `*done?*` on an Owed item, the user confirms via
   `done-owed: N`, ledger entry transitions to `state: "done"`.
+- **`research: <query>` reply keyword on every outbound email** — briefings,
+  follow-ups, and digests now all accept a `research:` reply that runs web
+  research via the `WebSearch` / `WebFetch` MCP tools and replies with a
+  200–800 word synthesized answer on the same Gmail thread (mirrored to
+  Slack). Works without a transcript — the right tool for "tell me more about
+  this company / topic / person" replies that `expand:` could not service.
+- **Briefings now create an awaiting-reply state file** at
+  `~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-briefing-<slug>.md`, mirroring
+  the existing follow-up state-file shape. The dispatcher in
+  `commands/follow-up.md` Step 0 handles briefing-thread replies without
+  modification (the `-awaiting-reply-` basename check matches both filenames).
+  Pre-meeting replies asking for context now have a place to land.
+- **Consistent HTML renderer across all three email types.**
+  `commands/briefing.md` Step 7 was upgraded to the same renderer used by
+  follow-ups and digests — italic, numbered lists, bulleted lists, links,
+  bold all render identically across every email this system sends. Reply
+  footers use the same `---` separator and bullet shape across briefing,
+  follow-up, and digest.
+- **`expand:` and `quote:` fail gracefully on briefing threads** (which have
+  no transcript). The dispatcher now responds with a one-line nudge
+  suggesting `research:` instead, rather than the older "transcript no longer
+  available" wording that implied the transcript had been deleted.
 - **`docs/README.md`** — short note framing the `docs/` folder as build-time
   working notes rather than authoritative product documentation.
 

@@ -1,5 +1,5 @@
 # Pre-meeting briefing
-<!-- version: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Previous: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
+<!-- version: 2026-05-29 — Briefings now create an awaiting-reply state file (filename pattern `*-awaiting-reply-briefing-<slug>.md` to avoid colliding with the follow-up's awaiting-reply file). Adds reply-keyword footer to the briefing markdown (`research: <query>`, `cancel`, `extend`) so replies to briefings land in the same dispatcher used by follow-ups. Step 7 HTML renderer upgraded to match `commands/follow-up.md` Step 6 / `commands/digest.md` Step 5 (italic, numbered lists, links) — consistent look and feel across every outbound email. Previous: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Earlier: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
 
 Generate a briefing document for upcoming meetings (internal and external), pulling context from Gmail, Drive, and Slack.
 
@@ -331,6 +331,12 @@ Use this structure (skip any Detail sub-section that has no content):
 
 ## Prep notes
 
+---
+
+Reply to this thread before the meeting:
+- `research: <query>` — web research on a topic, person, or company (result lands as a reply on this thread, mirrored to Slack)
+- `cancel` — drops this reply thread
+- `extend` — keeps the reply thread open another 30 days
 ```
 
 **For internal-only meetings:**
@@ -376,7 +382,15 @@ Use this structure (skip any Detail sub-section that has no content):
 
 ## Prep notes
 
+---
+
+Reply to this thread before the meeting:
+- `research: <query>` — web research on a topic, person, or company (result lands as a reply on this thread, mirrored to Slack)
+- `cancel` — drops this reply thread
+- `extend` — keeps the reply thread open another 30 days
 ```
+
+**Reply-keyword footer rule.** The block from `---` through the `extend` line must appear at the bottom of every briefing markdown, after `## Prep notes`, in both templates above. Same footer shape and same `---` separator as `commands/follow-up.md` and `commands/digest.md` — consistency across every email this system sends. `expand:` and `quote:` are not invited on a briefing thread because there is no transcript yet (the meeting hasn't happened); the dispatcher in `commands/follow-up.md` Step 5 handles such replies gracefully by suggesting `research:` instead.
 
 ### Step 6: Quality check
 
@@ -397,46 +411,59 @@ Tell the user where the file was saved and give a 2-3 line summary of what's in 
 
 After saving and quality-checking, deliver via both channels:
 
-**Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`:
+**Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`. Use the **same renderer** as `commands/follow-up.md` Step 6 and `commands/digest.md` Step 5 — handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Consistency across every email this system sends is intentional; do not improvise a different renderer here. Capture the `gws gmail +send` JSON response so the `threadId` is available for the awaiting-reply state file below:
+
 ```bash
-HTML=$(python3 << 'PYEOF'
-import re
+HTML=$(BRIEFING_FILE="$BRIEFING_FILE" python3 << 'PYEOF'
+import os, re
 
 def inline(text):
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'(?<![\w*])\*([^*\n]+?)\*(?![\w*])', r'<i>\1</i>', text)
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
     return text
 
-lines = open('BRIEFING_FILE').read().split('\n')
+def close_lists(out, state):
+    if state['ul']: out.append('</ul>'); state['ul'] = False
+    if state['ol']: out.append('</ol>'); state['ol'] = False
+
+lines = open(os.environ['BRIEFING_FILE']).read().split('\n')
 out = []
-in_list = False
+state = {'ul': False, 'ol': False}
 
 for line in lines:
     if line.startswith('# '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h2 style="margin:0 0 4px 0">{inline(line[2:])}</h2>')
     elif line.startswith('## '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{inline(line[3:])}</h3>')
     elif line.startswith('### '):
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<h4 style="margin:12px 0 2px 0">{inline(line[4:])}</h4>')
     elif re.match(r'^\s*- ', line):
+        if state['ol']: out.append('</ol>'); state['ol'] = False
         content = re.sub(r'^\s*- ', '', line)
-        if not in_list: out.append('<ul style="margin:4px 0;padding-left:20px">'); in_list = True
+        if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
+        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
+    elif re.match(r'^\s*\d+\.\s+', line):
+        if state['ul']: out.append('</ul>'); state['ul'] = False
+        content = re.sub(r'^\s*\d+\.\s+', '', line)
+        if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
         out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
     elif line.strip() == '':
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append('<div style="margin:6px 0"></div>')
     else:
-        if in_list: out.append('</ul>'); in_list = False
+        close_lists(out, state)
         out.append(f'<p style="margin:3px 0">{inline(line)}</p>')
 
-if in_list: out.append('</ul>')
+close_lists(out, state)
 print('\n'.join(out))
 PYEOF
 )
-gws gmail +send --to "$MY_EMAIL" --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --body "$HTML" --html
+SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --body "$HTML" --html)
+THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
 
 **Slack** — convert the briefing to Slack mrkdwn before posting (do NOT wrap in a code block). Check if the webhook URL is configured:
@@ -466,3 +493,24 @@ print(payload)
 - If not found, skip Slack silently and note to the user that they can enable Slack delivery by saving their Slack incoming webhook URL to `~/.slack_webhook`.
 
 **Google Chat** (fallback if no Slack webhook) — skip unless the user has explicitly configured a Google Chat space.
+
+**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `research:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every briefing creates one — same shape and atomic tmp+rename pattern as the follow-up's state file (`commands/follow-up.md` Step 7), so the existing dispatcher in `commands/follow-up.md` Step 0 handles briefing-thread replies without modification. The filename includes `briefing` to avoid colliding with the follow-up's awaiting-reply file for the same meeting; both can coexist (briefing thread + follow-up thread are separate Gmail threads, each with its own `last_processed_msg` watermark). `transcript_source` is left empty for briefings (no transcript exists pre-meeting; the dispatcher's `expand:`/`quote:` branches handle that case gracefully by suggesting `research:` instead).
+
+```bash
+umask 077
+AWAITING_REPLY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-briefing-slug.md
+TMP="${AWAITING_REPLY}.tmp"
+cat >"$TMP" <<EOF
+thread_id: $THREAD_ID
+meeting: [Meeting Name]
+slug: YYYY-MM-DD-HHmm-slug
+kind: briefing
+transcript_source:
+created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+last_processed_msg:
+EOF
+chmod 600 "$TMP"
+mv "$TMP" "$AWAITING_REPLY"
+```
+
+The `kind: briefing` field is purely informational — the dispatcher in `commands/follow-up.md` Step 0 already does the right thing based on the empty `transcript_source` value, but `kind` keeps state files self-describing for humans reading them. If `$THREAD_ID` is empty (email send didn't return a threadId), log `"WARN: briefing sent but threadId not captured — awaiting-reply state skipped for [meeting]"` to `~/Briefings/scheduler.log` and skip the state file. The briefing itself is still delivered.

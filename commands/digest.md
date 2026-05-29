@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename (modelled on briefings_mcp/ledger.py:189-196); includes empty last_processed_msg field for the dedup watermark consumed by commands/follow-up.md awaiting-digest branch. Previous: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
+<!-- version: 2026-05-29 — Footer keyword list adds `research: <query>` for symmetry with briefing and follow-up emails (handler lives in commands/follow-up.md awaiting-digest dispatcher). Previous: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename (modelled on briefings_mcp/ledger.py:189-196); includes empty last_processed_msg field for the dedup watermark consumed by commands/follow-up.md awaiting-digest branch. Earlier: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -246,6 +246,7 @@ Reply to update:
 - `not-mine: 5 → Cédric` — reassign a Yours item to a named owner
 - `drop-owed: 2` — drop an Owed-to-you item (FYI noise, not actually owed)
 - `send: 1` — fire Nudge draft #1
+- `research: <query>` — web research on a topic, person, or company; result lands as a reply on this thread
 - `cancel` — drop this digest thread
 - `extend` — reset the 30-day reply window
 ```
