@@ -65,12 +65,9 @@ if my_name:
     if first:
         my_aliases.add(first)
 
-def is_mine(owner_str):
-    if not owner_str:
-        return False
-    return owner_str.strip().lower() in my_aliases
-
 now = datetime.now(timezone.utc)
+
+SECTION_CAP = 15  # Per-section display cap. Older overflow is hidden but kept in ledger.
 
 mine, owed = [], []
 for entry in ledger.iter_entries():
@@ -78,7 +75,12 @@ for entry in ledger.iter_entries():
         continue
     if entry.get("state") not in ("open", "in-flight"):
         continue
-    owner = entry.get("owner", "") or ""
+    owner = (entry.get("owner") or "").strip()
+    owner_lower = owner.lower()
+    # Items explicitly disowned via `not-mine: N` (no reassignment) are kept in the
+    # ledger for audit but skipped from both digest sections — they are noise.
+    if owner_lower in ("", "unassigned"):
+        continue
     attendees = entry.get("attendees", []) or []
     # parse created_at age in days
     created = entry.get("created_at", "")
@@ -97,17 +99,39 @@ for entry in ledger.iter_entries():
         "created_at": created,
         "age_days": age_days,
     }
-    if is_mine(owner):
+    if owner_lower in my_aliases:
         mine.append(record)
     elif my_email in [a.lower() for a in attendees]:
         owed.append(record)
 
-print(json.dumps({"mine": mine, "owed": owed}))
+# Newest first so the most recent commitments stay above the cap. Owed items
+# in particular pile up — the cap keeps the digest scannable; the overflow
+# count is surfaced in the rendered output so it isn't invisible.
+mine.sort(key=lambda r: r["created_at"], reverse=True)
+owed.sort(key=lambda r: r["created_at"], reverse=True)
+
+mine_total = len(mine)
+owed_total = len(owed)
+mine_shown = mine[:SECTION_CAP]
+owed_shown = owed[:SECTION_CAP]
+mine_hidden = mine_total - len(mine_shown)
+owed_hidden = owed_total - len(owed_shown)
+
+print(json.dumps({
+    "mine": mine_shown,
+    "owed": owed_shown,
+    "mine_total": mine_total,
+    "owed_total": owed_total,
+    "mine_hidden": mine_hidden,
+    "owed_hidden": owed_hidden,
+}))
 PYEOF
 )
 ```
 
-Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section.
+Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section. Both arrays are pre-sorted newest-first and pre-capped to 15 items each — the long tail is hidden but counted in `mine_hidden` / `owed_hidden`, and the renderer surfaces those counts so suppressed items are visible-by-inference. `mine_total` / `owed_total` carry the un-capped totals for the Slack heads-up.
+
+Items whose `owner` is empty or literally `"unassigned"` (typically the result of a prior `not-mine: N` reply) are filtered out of both arrays — they remain in the ledger for audit but stop adding noise to the digest.
 
 **If both arrays are empty**, jump to Step 5's "nothing open" branch — no email, just a Slack notice. Do not create a digest file or an awaiting-reply file.
 
@@ -192,10 +216,21 @@ Reply to update:
 - `done: 1, 3` — mark Yours items complete in the ledger
 - `more: 2` — keep open, snooze to next digest
 - `drop: 4` — abandon a Yours item
+- `not-mine: 5` — disown a Yours item (it shouldn't have been attributed to you)
+- `not-mine: 5 → Cédric` — reassign a Yours item to a named owner
+- `drop-owed: 2` — drop an Owed-to-you item (FYI noise, not actually owed)
 - `send: 1` — fire Nudge draft #1
 - `cancel` — drop this digest thread
 - `extend` — reset the 30-day reply window
 ```
+
+**Overflow line per section.** After the last numbered item in `## Yours` (and again after `## Owed to you`), if the corresponding `mine_hidden` / `owed_hidden` value is greater than zero, render one italic line:
+
+```
+*…and N more older items hidden. Reply `not-mine:`, `drop:`, or `done:` to prune this list; older items become visible as you do.*
+```
+
+Substitute the actual `N` for `mine_hidden` / `owed_hidden`. Omit the line entirely when the value is zero. The cap is per-section, so a section can be fully shown while the other is overflowing.
 
 **Period themes line (Phase 4):** Below the date heading, before `## Yours`, render an italic one-liner of recurring topics from the ledger. Call `briefings_mcp.query.find_patterns(window_days=60, min_count=3, limit=3)` (no attendee or topic filter — global view). Format: `*Period themes: topic1 (N), topic2 (M), topic3 (K)*`. Omit the line entirely when `find_patterns` returns an empty list. This is contextual scene-setting, not a section heading.
 
@@ -281,7 +316,7 @@ THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.
 :bookmark_tabs: Actions tracker delivered — <N> yours / <M> owed.
 ```
 
-Where N is `len(mine)` and M is `len(owed)`. If smart pre-marking flagged some items, add `(<K> may already be done)` to the end.
+Where N is `mine_total` and M is `owed_total` (the un-capped totals — the Slack heads-up reflects the real backlog, not just what was rendered). If smart pre-marking flagged some items, add `(<K> may already be done)` to the end.
 
 **"Nothing open" branch** — if both `mine` and `owed` are empty (skipped from Step 1), skip the email entirely. Slack notice:
 
@@ -321,7 +356,7 @@ Use the tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`. Never 
 
 The `mine` and `owed` arrays are JSON of UUIDs in **display order** (so `done: 1` resolves to `mine[0]`). The `nudges` array is JSON of `{to, subject, body}` records in display order (so `send: 1` resolves to `nudges[0]`).
 
-`last_processed_msg` is empty initially. `commands/follow-up.md`'s awaiting-digest branch sets it to the Gmail message ID of every user reply it acts on (`done:`/`drop:`/`more:`/`send:`/`extend`/unrecognized), preventing the same reply from being re-processed on the next scheduler cycle. Without this watermark a `more: 2` reply would re-ack on every 15-minute tick until something else moves the thread.
+`last_processed_msg` is empty initially. `commands/follow-up.md`'s awaiting-digest branch sets it to the Gmail message ID of every user reply it acts on (`done:`/`drop:`/`not-mine:`/`drop-owed:`/`more:`/`send:`/`extend`/unrecognized), preventing the same reply from being re-processed on the next scheduler cycle. Without this watermark a `more: 2` reply would re-ack on every 15-minute tick until something else moves the thread.
 
 If `$THREAD_ID` is empty (email send didn't return a threadId), log `"WARN: digest sent but threadId not captured — awaiting-digest state skipped for $(date +%Y-%m-%d)"` to `~/Briefings/scheduler.log` and skip the state file. The digest itself is still delivered; only the reply-keyword loop is degraded.
 
@@ -333,4 +368,4 @@ Tell the user:
 - The digest was generated for today
 - N yours / M owed (and K with `done?` hints if any)
 - Path to the digest file
-- That reply keywords (`done:`, `more:`, `drop:`, `send:`, `cancel`, `extend`) will be picked up on the next scheduler cycle via the awaiting-digest state file
+- That reply keywords (`done:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, `extend`) will be picked up on the next scheduler cycle via the awaiting-digest state file

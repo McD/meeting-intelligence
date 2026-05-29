@@ -245,6 +245,16 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack `"Dropped: …"`.
 
+   - `not-mine: N[, M, ...]` (optional `→ <name>` suffix for reassignment) — disowns a Yours item that shouldn't have been attributed to the user. For each index N (1-based), look up `mine[N-1]` (the UUID). If the reply line contains a `→` (or ` -> `), parse everything after the arrow as the new owner name (stripped, preserving case). Otherwise the new owner is the literal string `"unassigned"`. Call `briefings_mcp.ledger.update_commitment_owner(uuid, new_owner)` for each. Ack:
+     ```
+     Re-attributed:
+     - <summary of mine[N-1]> → <new_owner>
+     - <summary of mine[M-1]> → <new_owner>
+     ```
+     The reassigned items vanish from the next digest's Yours section. If `new_owner` was `"unassigned"`, the items also stay out of Owed-to-you (the digest filters unassigned-owner items from both sections). If `new_owner` is a named person who isn't the user, the items reappear in Owed-to-you on the next cycle. Out-of-range indices include `Couldn't find item N — only X in this digest.` and continue with in-range indices.
+
+   - `drop-owed: N[, M, ...]` — same shape as `drop:` but indexes into `owed[]` (the **Owed to you** section) rather than `mine[]`. For each index N (1-based), look up `owed[N-1]` (the UUID), call `update_commitment_state(uuid, "dropped")`. Ack `"Dropped from Owed: …"`. Use this for FYI items captured as commitments that aren't actually owed to the user. Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
+
    - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
 
    - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). **This branch reverses the normal send-then-watermark ordering.** Because the nudge goes to an EXTERNAL recipient (not the user's own thread), a double-fire would mean the recipient receives the same nudge twice — a real social cost that other keywords don't carry. Order of operations:
@@ -252,7 +262,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
      2. **Then** send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`.
      3. Ack to the digest thread: `"Nudge sent to <to>."` If send fails (step 2), ack: `"Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry."` — the watermark is already written, so explicit retry is the recovery path. This favors "may miss a nudge under crash, never duplicate" over "always send, may duplicate". Document this for the user in the ack so retry semantics are visible.
 
-   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
+   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`cancel\`, or \`extend\`."`. Leave state file.
 
 6. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
 
@@ -273,7 +283,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    Never overwrite the state file in place. A crash mid-write would truncate `thread_id` / `mine` / `owed` / `nudges` and lose every action item the digest tracked. The tmp+rename pattern is atomic — either the new file fully exists or the old one does.
 
-   This is the single write site for the watermark across `extend`, `done:`, `drop:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
+   This is the single write site for the watermark across `extend`, `done:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 
@@ -456,7 +466,8 @@ Extract:
 - **Action items** — each as: `[Person] — [what they need to do] (by [date] if mentioned)`
   - List **the user's own actions first** (the user is whoever owns `$MY_EMAIL`; render their actions under `**You**`)
   - If no name is attached to an action, attribute it to the meeting organiser
-  - Include ALL actions, not just the user's
+  - Include ALL actions where someone has committed to do something concrete with a deliverable, decision, or interaction. **Do NOT** capture as action items: personal logistics (someone booking their own travel, dentist appointments, life admin), generic intentions ("we should think about X"), or things mentioned in passing that nobody committed to. If it wouldn't make sense to chase someone on it later, it isn't an action item.
+  - **Owner is the doer, not the mentioned.** Attribute each action to the person who will actually perform it, not whoever's name appears in the action text. Example: "find a way to bring Jane's product insight back in after her exit" — if the doer is the remaining team, attribute to them; do NOT attribute to Jane just because her name is in the body. When the user's name appears in an action they are not performing, the user is the *subject*, not the *owner*.
   - **Confidence callouts** — when the transcript leaves the owner or scope genuinely ambiguous, mark the uncertainty inline. Use sparingly; do not hedge clean actions.
     - **Unclear owner** — append `?` to the person's name: `**You?**`, `**Alice?**`, `**Organiser?**`. Trigger this only when the transcript does not assign a clear owner (e.g. "someone should send the recap").
     - **Unclear scope** — append italic `*(scope?)*` at the end of the action text. Trigger when the action is vague enough that the person would not know what "done" looks like (e.g. "Owner to do something about the website" → `**You** — handle the website *(scope?)*`).
@@ -477,6 +488,12 @@ Each extracted item becomes one entry in the append-only ledger at `~/.briefings
 - **Key decisions** → ledger `type: "decision"` with `resolved: true` (the meeting reached a resolution).
 - **Action items** → ledger `type: "commitment"` with `state: "open"`, `owner: <person>`, and `due: <ISO date or null>`.
 - **Open questions** are *not* appended in v1 — they remain in the follow-up doc only.
+
+**Owner field rules** (mirroring Step 3's extraction rules — repeated here because the ledger is the durable surface and the rules need to bind at write time):
+- `owner` is the **doer** of the action. The string `"You"` is reserved for the user (`$MY_EMAIL`) and is the only value the digest's Yours matcher catches for the user.
+- If the action is someone else's commitment and the user is merely in attendees, set `owner` to that person's name as it appears in the transcript — not `"You"`.
+- If an action is genuinely the user's, use `"You"`. Do **not** use the user's full name (`$MY_NAME`) as the owner string — the matcher accepts it but `"You"` is the convention and keeps the ledger consistent.
+- If you would not capture this as a commitment because it's personal logistics or a passing intention (Step 3's filter), do not append it at all. The digest cap exists precisely because past extractions have been too generous; the lasting fix is at the source.
 
 For each item, infer **1–3 short topic tags** (e.g. `"pricing"`, `"q3-plan"`, `"renewal"`) from its content. Topics are fuzzy-matched by substring in the MCP server, so consistency is helpful but not strict.
 

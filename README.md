@@ -66,7 +66,7 @@ tail -f ~/Briefings/scheduler.log
 
 A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending.
 
-**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `more: N`, `drop: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
+**Reply keywords on follow-up and digest emails** — `expand: <request>`, `quote: <topic>`, `cancel`, `extend` (follow-up); `done: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N`, `cancel`, `extend` (digest) — are picked up by the next scheduler cycle. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 
 ## Update
 
@@ -338,11 +338,16 @@ Reply to the digest email to update commitment state. The scheduler picks up rep
 - `done: 1, 3` — mark Yours items 1 and 3 as `state: "done"` in the ledger
 - `more: 2` — keep Yours item 2 open, snooze to next digest (no state change, just logged)
 - `drop: 4` — mark Yours item 4 as `state: "dropped"`
+- `not-mine: 5` — disown Yours item 5; sets `owner` to `"unassigned"` and the item disappears from both sections of future digests (useful when extraction over-attributed an action to you)
+- `not-mine: 5 → Cédric` — same as `not-mine: 5` but reassigns ownership to a named person; the item reappears in **Owed to you** on the next cycle
+- `drop-owed: 2` — mark Owed-to-you item 2 as `state: "dropped"` (useful for FYI items captured as commitments that aren't actually owed to you)
 - `send: 2` — fire Nudge draft 2 to its recipient via Gmail
 - `cancel` — drop the awaiting-digest thread (state file deleted, no further polling)
 - `extend` — reset the 30-day expiry clock on the awaiting-digest state file
 
-Each successful update gets a one-line acknowledgment reply in the same thread. Unrecognized replies get a one-line "didn't recognize that — try `done:`, `more:`, `drop:`, `send:`, `cancel`, or `extend`" response.
+Each section is capped at 15 items per digest, newest first; the older overflow is kept in the ledger and counted in an italic "…and N more older items hidden" line. The cap shrinks naturally as you reply `done:` / `drop:` / `not-mine:` / `drop-owed:` and older items become visible.
+
+Each successful update gets a one-line acknowledgment reply in the same thread. Unrecognized replies get a one-line "didn't recognize that — try `done:`, `more:`, `drop:`, `not-mine:`, `drop-owed:`, `send:`, `cancel`, or `extend`" response.
 
 If the ledger has no open commitments on a Mon or Thu, the digest skips the email entirely and posts a single Slack notice ("Actions tracker: nothing open — clean slate for the week ahead."). No empty email lands in your inbox.
 

@@ -12,6 +12,18 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   `/digest` "Yours" matcher so commitments recorded under your display name
   (e.g. "Jane Doe") get attributed correctly. Falls back to the local-part of
   `MY_EMAIL` if absent. `install.sh` prompts for it as a third question.
+- **`not-mine: N` and `not-mine: N → <name>` digest reply keywords** — disown
+  a Yours item the extractor over-attributed to you, optionally reassigning to
+  a named person. Backed by a new `briefings_mcp.ledger.update_commitment_owner`
+  mutator with the same atomic-rewrite shape as `update_commitment_state`.
+- **`drop-owed: N` digest reply keyword** — drop an Owed-to-you item that was
+  captured as a commitment but is actually FYI noise. Symmetric counterpart to
+  `drop: N` for the other section.
+- **Per-section digest cap** — `## Yours` and `## Owed to you` are now sorted
+  newest-first and capped at 15 items each. The overflow count is surfaced in
+  an italic "…and N more older items hidden" line so suppressed items remain
+  visible-by-inference. Older items become visible as you prune the recent
+  ones with `done:` / `drop:` / `not-mine:` / `drop-owed:`.
 - **`docs/README.md`** — short note framing the `docs/` folder as build-time
   working notes rather than authoritative product documentation.
 
@@ -22,6 +34,16 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   of literal first-name fallbacks; example strings in the bot-vs-user
   disambiguation and Teams transcript notes use generic placeholders. No
   behaviour change for installs that set `MY_NAME` to their actual full name.
+- **Tighter `/follow-up` action-item extraction.** Step 3's prompt now
+  explicitly excludes personal logistics, generic intentions, and passing
+  mentions from action items, and explicitly assigns `owner` to the doer rather
+  than to whoever's name appears in the action body. Step 4's ledger-write
+  block repeats the owner rule at the durable boundary. Past extractions are
+  cleanable via `not-mine:` / `drop-owed:`; the prompt change reduces the
+  inflow of those items at source.
+- **Digest filter skips unassigned owners.** Items with `owner` empty or equal
+  to `"unassigned"` are filtered out of both Yours and Owed-to-you (kept in
+  the ledger for audit; suppressed from the rendered digest).
 
 ## [0.2.0] — 2026-05-19
 

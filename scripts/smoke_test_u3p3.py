@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Smoke test for Phase 3 U1: briefings_mcp.ledger.update_commitment_state.
+"""Smoke test for Phase 3 U1: briefings_mcp.ledger.update_commitment_state
+and the post-share addition update_commitment_owner.
 
 Exercises happy paths (every valid state), no-match, type rejection (decision entries are
-not mutable), invalid state rejection, missing-ledger handling, and byte-identical
-preservation of untouched lines.
+not mutable), invalid state rejection, missing-ledger handling, byte-identical
+preservation of untouched lines, plus the equivalent paths for the owner mutator
+used by the digest's `not-mine: N[ → <name>]` reply keyword.
 
 Mirrors the shape of scripts/smoke_test_u4.py (Phase 1 U4 MCP query module): print PASS/FAIL
 lines, exit 0 on all-pass.
@@ -145,6 +147,51 @@ with tempfile.TemporaryDirectory(prefix="u3p3-smoke-") as raw:
     # c3 untouched after the rejected update attempt
     c3_now = next(e for e in read_all_entries() if e["id"] == c3["id"])
     check("c3 state still 'open' after rejected update", c3_now["state"] == "open")
+
+    # --- update_commitment_owner: happy path (reassign by name) ---
+    raw_before = read_raw_lines()
+    ok = ledger.update_commitment_owner(c3["id"], "Cédric")
+    check("c3 owner → Cédric returns True", ok is True)
+    c3_now = next(e for e in read_all_entries() if e["id"] == c3["id"])
+    check("c3 owner is now 'Cédric'", c3_now["owner"] == "Cédric", f"got {c3_now['owner']!r}")
+    # Untouched lines remain byte-identical
+    raw_after = read_raw_lines()
+    check("d1 line unchanged after owner mutation", raw_before[0] == raw_after[0])
+    check("c1 line unchanged after owner mutation", raw_before[1] == raw_after[1])
+    check("c2 line unchanged after owner mutation", raw_before[2] == raw_after[2])
+
+    # --- update_commitment_owner: clear to 'unassigned' ---
+    ok = ledger.update_commitment_owner(c1["id"], "unassigned")
+    check("c1 owner → 'unassigned' returns True", ok is True)
+    c1_now = next(e for e in read_all_entries() if e["id"] == c1["id"])
+    check("c1 owner is now 'unassigned'", c1_now["owner"] == "unassigned")
+
+    # --- update_commitment_owner: trims whitespace ---
+    ledger.update_commitment_owner(c1["id"], "  Alice  ")
+    c1_now = next(e for e in read_all_entries() if e["id"] == c1["id"])
+    check("owner trimmed on write", c1_now["owner"] == "Alice")
+
+    # --- update_commitment_owner: no match returns False, ledger untouched ---
+    raw_before = read_raw_lines()
+    ok = ledger.update_commitment_owner(str(uuid.uuid4()), "Bob")
+    check("non-existent id returns False (owner)", ok is False)
+    raw_after = read_raw_lines()
+    check("ledger byte-identical after owner no-match", raw_before == raw_after)
+
+    # --- update_commitment_owner: empty string rejected ---
+    for bad in ("", "   ", None, 42):
+        try:
+            ledger.update_commitment_owner(c2["id"], bad)
+            check(f"empty/invalid owner {bad!r} raises SchemaError", False, "no exception raised")
+        except schema.SchemaError:
+            check(f"empty/invalid owner {bad!r} raises SchemaError", True)
+
+    # --- update_commitment_owner: decision entries are not mutable ---
+    try:
+        ledger.update_commitment_owner(d1["id"], "Alice")
+        check("decision entry rejects owner mutation", False, "no exception raised")
+    except schema.SchemaError as exc:
+        check("decision entry rejects owner mutation", "commitment" in str(exc))
 
 
 # --- Error: missing ledger file raises FileNotFoundError ---

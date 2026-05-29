@@ -197,6 +197,66 @@ def update_commitment_state(entry_id: str, new_state: str) -> bool:
     return True
 
 
+def update_commitment_owner(entry_id: str, new_owner: str) -> bool:
+    """Mutate one commitment entry's `owner` field in place.
+
+    Used by the digest's `not-mine: N[ → <name>]` reply keyword to correct
+    over-attribution (e.g. an item whose owner the extractor stamped as the user
+    but which is actually someone else's, or genuinely unassigned). Only
+    commitment entries are mutable; decision entries are rejected.
+
+    Returns True on a successful update, False when no entry matched the id.
+    Atomic-rewrite shape matches `update_commitment_state` — safe under the
+    single-writer guarantee.
+
+    Raises schema.SchemaError when `new_owner` is empty (use "unassigned" if you
+    want to clear ownership without conflating with a real name), or when the
+    matched entry's type is not "commitment". Raises FileNotFoundError when the
+    ledger does not yet exist.
+    """
+    if not isinstance(new_owner, str) or not new_owner.strip():
+        raise schema.SchemaError(
+            "new_owner must be a non-empty string (use 'unassigned' to clear ownership)"
+        )
+    if not LEDGER_PATH.exists():
+        raise FileNotFoundError(LEDGER_PATH)
+
+    matched = False
+    lines_out: list[str] = []
+    with open(LEDGER_PATH, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            stripped = raw_line.strip()
+            if not stripped:
+                lines_out.append(raw_line)
+                continue
+            entry = json.loads(stripped)
+            if entry.get("id") == entry_id:
+                if entry.get("type") != "commitment":
+                    raise schema.SchemaError(
+                        f"entry {entry_id!r} is type {entry.get('type')!r}, expected 'commitment'"
+                    )
+                matched = True
+                entry["owner"] = new_owner.strip()
+                lines_out.append(
+                    json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+            else:
+                lines_out.append(raw_line if raw_line.endswith("\n") else raw_line + "\n")
+
+    if not matched:
+        return False
+
+    tmp_path = LEDGER_PATH.with_suffix(".jsonl.tmp")
+    with _restricted_umask():
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(lines_out)
+            f.flush()
+            os.fsync(f.fileno())
+    os.chmod(tmp_path, _FILE_MODE)
+    os.replace(tmp_path, LEDGER_PATH)
+    return True
+
+
 def iter_entries(since: date | None = None) -> Iterator[dict]:
     """Stream ledger entries in append order. If since is given, skip entries whose
     created_at date is earlier than since.
