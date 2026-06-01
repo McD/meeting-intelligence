@@ -91,17 +91,25 @@ echo "If you haven't signed in yet, open a new Terminal window and run: claude"
 echo ""
 read -rp "Press Enter once you're signed in to Claude..."
 
-# ── Step 4: GNU coreutils — no longer required ──────────────────────────────
-# Prior versions installed coreutils here to get `gtimeout` for the scheduler
-# watchdog. As of 2026-06-01 the scheduler uses a bash-native watchdog
-# (scripts/scheduler.sh `run_with_watchdog`) built from system binaries only,
-# sidestepping a macOS Sequoia TCC bug where gtimeout's adhoc-signed binary
-# kept hitting a stuck `auth_value=5` consent state and re-prompting every
-# 15-minute cycle. Step kept as a no-op so subsequent step numbers stay
-# stable for users following the README.
+# ── Step 4: TCC stuck-row cleanup helper ────────────────────────────────────
+# Sequoia's kTCCServiceSystemPolicyAppData consent storage writes auth_value=5
+# (a "needs re-verification" placeholder) instead of auth_value=2 (allowed)
+# for adhoc-signed CLI binaries like Claude Code's per-version executable.
+# Without remediation, every access re-prompts the user. The helper script
+# installed here clears stuck rows when invoked; an opt-in launchd plist at
+# scripts/tcc-unstick.plist.template can automate the cleanup daily. See
+# docs/solutions/integration-issues/macos-sequoia-tcc-gtimeout-stuck-state-
+# 2026-06-01.md for the full pattern.
+#
+# (Prior versions of Step 4 installed Homebrew coreutils for the gtimeout
+# watchdog. As of 2026-06-01 the scheduler uses a Python-based watchdog via
+# /usr/bin/python3, so coreutils is no longer required.)
 echo ""
-echo -e "${BOLD}Step 4: GNU coreutils${NC}"
-ok "Skipped — scheduler no longer needs gtimeout (uses bash-native watchdog)."
+echo -e "${BOLD}Step 4: TCC stuck-row cleanup helper${NC}"
+mkdir -p ~/.local/bin
+cp "$SCRIPT_DIR/scripts/claude-tcc-unstick" ~/.local/bin/claude-tcc-unstick
+chmod +x ~/.local/bin/claude-tcc-unstick
+ok "claude-tcc-unstick installed to ~/.local/bin/. Run it when a macOS TCC prompt re-fires for an adhoc-signed binary."
 
 # ── Step 5: gws ──────────────────────────────────────────────────────────────
 echo ""

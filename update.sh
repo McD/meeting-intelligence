@@ -84,6 +84,24 @@ cp "$SCRIPT_DIR/scripts/scheduler.sh" ~/Briefings/scheduler.sh
 chmod +x ~/Briefings/scheduler.sh
 ok "scheduler.sh updated."
 
+# ── Install/refresh TCC stuck-row cleanup helper ─────────────────────────────
+# claude-tcc-unstick clears auth_value=5 rows from ~/Library/Application
+# Support/com.apple.TCC/TCC.db for known active binaries (Claude Code per-
+# version path, gtimeout from Homebrew coreutils). Sequoia's
+# kTCCServiceSystemPolicyAppData consent storage writes auth_value=5 for
+# adhoc-signed CLI binaries instead of the expected auth_value=2, causing
+# recurring "would like to access data from other apps" prompts. Running this
+# helper after a prompt fires forces the next access to take the fresh-consent
+# path (writes auth_value=2 cleanly). See docs/solutions/integration-issues/
+# macos-sequoia-tcc-gtimeout-stuck-state-2026-06-01.md for the full pattern.
+#
+# Optional opt-in: scripts/tcc-unstick.plist.template ships a launchd plist
+# that runs this helper daily at 06:00. Not installed by default.
+mkdir -p ~/.local/bin
+cp "$SCRIPT_DIR/scripts/claude-tcc-unstick" ~/.local/bin/claude-tcc-unstick
+chmod +x ~/.local/bin/claude-tcc-unstick
+ok "claude-tcc-unstick installed to ~/.local/bin/."
+
 # ── Refresh briefings_mcp runtime ────────────────────────────────────────────
 # Editable install means git pull above has already propagated source changes;
 # a re-install only matters when pyproject.toml dependencies have changed

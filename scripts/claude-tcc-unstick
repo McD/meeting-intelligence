@@ -1,0 +1,107 @@
+#!/bin/bash
+# claude-tcc-unstick — clear macOS Sequoia auth_value=5 stuck-state TCC rows.
+#
+# Sequoia's kTCCServiceSystemPolicyAppData consent storage writes auth_value=5
+# (a "needs re-verification" placeholder) instead of auth_value=2 (allowed)
+# when persisting consent for adhoc-signed CLI binaries — including Claude
+# Code's per-version binary at ~/.local/share/claude/versions/X/. Without
+# remediation, EVERY access by the affected binary re-prompts the user.
+#
+# This script:
+#   1. Detects auth_value=5 rows for the known active binaries (Claude Code
+#      versions in ~/.local/share/claude/versions/, plus a few legacy paths
+#      we don't run today but may again).
+#   2. Deletes them from TCC.db via sqlite3 (no sudo — user owns the file
+#      with Full Disk Access).
+#   3. Reports what it cleared, and logs to ~/Briefings/scheduler.log so the
+#      action is auditable alongside the rest of the meeting-intelligence
+#      scheduler's activity.
+#
+# tccd watches TCC.db for changes and reloads its cache; killing tccd is not
+# strictly required, but if rows seem stuck after a clear, run:
+#   sudo killall tccd
+#
+# Invocation:
+#   claude-tcc-unstick           — clear stuck rows, exit 0
+#   claude-tcc-unstick --dry-run — report what would be cleared, exit 0
+#   claude-tcc-unstick --check   — exit 1 if any stuck rows exist (for scripts)
+
+set -e
+
+DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+LOG="$HOME/Briefings/scheduler.log"
+SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null || true)
+
+# Patterns: adhoc-signed CLI binaries known to trip the auth_value=5 bug.
+# Anchored to the path prefix so we don't accidentally touch other Homebrew
+# binaries the user may have intentionally granted permissions to.
+PATTERNS=(
+    "/Users/$USER/.local/share/claude/versions/%"
+    "/opt/homebrew/Cellar/coreutils/%/bin/gtimeout"
+)
+
+log() {
+    local msg="$1"
+    if [ -d "$(dirname "$LOG")" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M')] claude-tcc-unstick: $msg" >> "$LOG"
+    fi
+    echo "$msg"
+}
+
+mode="apply"
+case "${1:-}" in
+    --dry-run) mode="dry" ;;
+    --check)   mode="check" ;;
+    --help|-h)
+        head -30 "$0" | grep '^#' | sed 's/^# \?//'
+        exit 0
+        ;;
+esac
+
+# Build the WHERE clause from PATTERNS
+where_clause="auth_value = 5 AND ("
+sep=""
+for p in "${PATTERNS[@]}"; do
+    where_clause+="${sep}client LIKE '$p'"
+    sep=" OR "
+done
+where_clause+=")"
+
+# Detect stuck rows first
+stuck=$(sqlite3 "$DB" "SELECT service || '|' || client FROM access WHERE $where_clause;" 2>&1)
+
+if [ -z "$stuck" ]; then
+    if [ "$mode" = "check" ]; then
+        exit 0
+    fi
+    log "no stuck rows"
+    exit 0
+fi
+
+# Count + report
+count=$(printf '%s\n' "$stuck" | grep -c '^')
+
+if [ "$mode" = "check" ]; then
+    echo "$count stuck row(s) detected:"
+    printf '%s\n' "$stuck" | sed 's/^/  /'
+    exit 1
+fi
+
+if [ "$mode" = "dry" ]; then
+    log "dry-run: would clear $count stuck row(s):"
+    printf '%s\n' "$stuck" | sed 's/^/  /'
+    exit 0
+fi
+
+# Apply: delete the rows
+sqlite3 "$DB" "DELETE FROM access WHERE $where_clause;"
+
+log "cleared $count stuck TCC row(s)"
+printf '%s\n' "$stuck" | sed 's/^/  /' | tee -a "$LOG" >/dev/null
+
+# Slack heads-up so the user knows a prompt may fire shortly
+if [ -n "$SLACK_WEBHOOK" ]; then
+    payload=$(printf '{"text": ":wrench: TCC auto-cleanup cleared %s stuck row(s) for adhoc-signed binaries. Next macOS prompt that fires for one of these is the *fresh consent* path — clicking Allow should stick (writes auth_value=2). If prompts re-fire within minutes, run `sudo killall tccd` to force a tccd cache reload."}' "$count")
+    curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" \
+         -H 'Content-type: application/json' -d "$payload" >/dev/null || true
+fi

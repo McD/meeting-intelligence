@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+launchd plist template for the daily TCC stuck-row cleanup.
+
+Opt-in. Not installed by install.sh by default; the cleanup helper script
+~/.local/bin/claude-tcc-unstick can be run manually whenever a stuck TCC
+prompt appears. Install this plist when the manual cadence becomes
+annoying and you want a daily auto-clean.
+
+To install:
+    cp scripts/tcc-unstick.plist.template ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
+    sed -i.bak "s|REPLACE_ME_USER|$USER|g" ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
+    launchctl load ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
+
+To uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
+    rm ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
+
+Fires daily at 06:00 local time — before the typical work-day, so any
+fresh-consent prompt that the cleanup triggers can be answered before
+any morning meetings depend on the scheduler running cleanly.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.REPLACE_ME_USER.tcc-unstick</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/REPLACE_ME_USER/.local/bin/claude-tcc-unstick</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE_ME_USER/Briefings/tcc-unstick.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE_ME_USER/Briefings/tcc-unstick.log</string>
+</dict>
+</plist>
