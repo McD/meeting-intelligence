@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword (web research via WebSearch/WebFetch — works on briefing threads where transcript_source is empty); expand:/quote: now respond gracefully when transcript_source is empty (suggesting research: instead); awaiting-digest dispatcher also gains `research:`. Reply footer in follow-up email body lists `research:`. Previous: 2026-05-28c — Authorization check in Step 4 (both branches) is now a deterministic Python heredoc that invokes briefings_mcp.replies.parse_from_address rather than asking the LLM to parse the From header itself. Earlier: 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Mark McDermott <mark@screencloud.io>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -108,13 +108,19 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    If `FROM_OK=1`, continue to the bot-vs-user check below.
 
-   **Bot-vs-user disambiguation.** Address matches `$MY_EMAIL`; now distinguish the user's own mail-client reply from the bot's own past send. The bot uses `gws gmail +send`, which produces `From: you@example.com` or `From: <you@example.com>` — bare email, no display-name text before the angle brackets. The user's mail client (macOS Mail, Gmail web, mobile) automatically prepends a display name: `From: Your Name <you@example.com>`. (`labelIds` cannot disambiguate because bot and user share one Gmail account — both messages get `SENT`.)
-   - If From has NO display-name text → bot's own past send. Set watermark per Step 5b with `last_processed_msg: <last_message_id>` and SKIP.
-   - If From has display-name text → real user reply. Continue to Step 5.
+   **Bot-vs-user disambiguation — primary signal is `bot_sent_ids`.** Read the state file's `bot_sent_ids` array (a list of Gmail message-ids the bot has previously sent on this thread). If the last message's ID is in that array, the message is one of the bot's own past sends — set watermark per Step 5b with `last_processed_msg: <last_message_id>` and SKIP. No further parsing, no clarification reply.
+
+   This replaces the prior From-header display-name heuristic, which became unreliable when `gws gmail +send` started returning `From: Mark McDermott <mark@screencloud.io>` (with display name) for some sends. The ground-truth identifier is the message-id; bot_sent_ids holds the canonical list.
+
+   **Legacy state-file fallback.** If `bot_sent_ids` is missing or unparseable (state files written before this field was introduced), fall back to the display-name heuristic: From with no display-name text → bot's own send → SKIP. The fallback is best-effort and may misclassify when gws starts including display names; the lasting fix is to migrate the state file to populate `bot_sent_ids` on the next bot send (Step 5b appends on every successful send). State files created fresh always include `bot_sent_ids: []` at minimum.
 
    **Audit trail for skipped intermediate replies.** If the prior `last_processed_msg` was non-empty and at least one message in the array between that watermark and the last-message also passes the From/display-name checks (an earlier user reply that arrived between scheduler cycles and was superseded before being processed), log each one: `"WARN: Awaiting-reply for [meeting] skipped intermediate user reply <message_id> — processing only the latest"`. The latest reply is still processed; this is informational so dropped intent is visible in scheduler.log.
 
-5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows). Match against:
+5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows).
+
+   **Convention every send-branch below follows.** When a branch sends an email via `gws gmail +send`, capture the response's `id` field into `BOT_REPLY_MESSAGE_ID`. The Step 5b atomic rewrite consumes this variable and appends it to `bot_sent_ids`, so the next dispatcher cycle silently skips the bot's own message instead of trying to parse it as a user reply. Branches that send no email (e.g., `extend`, `cancel`) set `BOT_REPLY_MESSAGE_ID=""` and the array is preserved unchanged.
+
+   Match against:
 
    - `cancel` / `skip` / `no` / `done` — delete the awaiting-reply file. Log `"Awaiting-reply cancelled by user for [meeting]"`. Done. (No watermark write — the file is gone.)
 
@@ -152,10 +158,27 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    - **Anything else** — the user replied with text that does not match a keyword. Send a one-line clarification email reply: `"Didn't recognize '<first line>' — try \`expand: <request>\`, \`quote: <topic>\`, \`research: <query>\`, \`cancel\`, or \`extend\`."`. Log `"Unrecognized reply for [meeting]: <first line>"`.
 
-5b. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196` (`update_commitment_state`'s rewrite shape — same single-writer guarantee applies here, with the lock held by `scripts/scheduler.sh`):
+5b. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>`, append the bot's outgoing reply's message-id (from the `gws gmail +send` response JSON's `id` field — capture into `$BOT_REPLY_MESSAGE_ID` in the calling branch) to `bot_sent_ids`, and preserve every other field. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
 
    ```bash
    umask 077
+   # Build the new bot_sent_ids JSON array by parsing the existing one from
+   # the state file and appending $BOT_REPLY_MESSAGE_ID. If the branch sent
+   # no reply (extend, or an unrecognized branch that emitted nothing), pass
+   # BOT_REPLY_MESSAGE_ID="" and the array is preserved unchanged.
+   NEW_BOT_IDS=$(BOT_REPLY_MESSAGE_ID="$BOT_REPLY_MESSAGE_ID" \
+                 EXISTING_FILE="$AWAITING_FILE" \
+                 python3 -c "
+import os, json, re, sys
+text = open(os.environ['EXISTING_FILE']).read()
+m = re.search(r'^bot_sent_ids:\s*(\[.*\])\s*$', text, re.MULTILINE)
+ids = json.loads(m.group(1)) if m else []
+new_id = os.environ['BOT_REPLY_MESSAGE_ID']
+if new_id and new_id not in ids:
+    ids.append(new_id)
+print(json.dumps(ids))
+")
+
    TMP="${AWAITING_FILE}.tmp"
    cat >"$TMP" <<EOF
    thread_id: $THREAD_ID
@@ -164,12 +187,22 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
    transcript_source: $TRANSCRIPT_SOURCE
    created_at: $CREATED_AT
    last_processed_msg: $USER_REPLY_MESSAGE_ID
+   bot_sent_ids: $NEW_BOT_IDS
    EOF
    chmod 600 "$TMP"
    mv "$TMP" "$AWAITING_FILE"
    ```
 
    Never overwrite the state file in place with `cat > $AWAITING_FILE`. A crash mid-write would truncate `thread_id` / `transcript_source` / `created_at` and leave the next cycle unable to act on the meeting at all. The tmp+rename pattern is atomic on POSIX: either the new file fully exists or the old one does.
+
+   **`$BOT_REPLY_MESSAGE_ID` capture convention.** Every send-branch in Step 5 (`expand:`, `quote:`, `research:`, and the "Anything else" unrecognized branch) MUST capture the `id` field from `gws gmail +send`'s response JSON before flowing into Step 5b. The pattern mirrors how `$THREAD_ID` is captured in Step 7 of the new-follow-up flow:
+
+   ```bash
+   SEND_RESPONSE=$(gws gmail +send --thread-id "$thread_id" --subject "..." --body "$BODY" --html)
+   BOT_REPLY_MESSAGE_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
+   ```
+
+   For branches that send no reply (e.g., `extend` which only rewrites `created_at`), set `BOT_REPLY_MESSAGE_ID=""` before Step 5b. The state-file rewrite leaves `bot_sent_ids` unchanged in that case.
 
    This single write site covers `extend`, `expand:`, `quote:`, `research:`, and the unrecognized-keyword branch. Every keyword that leaves the state file in place flows through Step 5b — there is no per-branch watermark write. If a future keyword is added, the watermark write is automatic provided the branch doesn't delete the file.
 
@@ -816,9 +849,13 @@ fi
 
 Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. If `~/.slack_webhook` is not found, skip silently.
 
-**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write:
+**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `research:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write. Capture BOTH the thread-id and the follow-up email's own message-id from the `gws gmail +send` response — the message-id seeds `bot_sent_ids` so Step 0's dispatcher knows the initial follow-up email is one of the bot's own sends (not a user reply to mis-parse):
 
 ```bash
+SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
+THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
+INITIAL_MESSAGE_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
+
 umask 077
 AWAITING_REPLY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-slug.md
 TMP="${AWAITING_REPLY}.tmp"
@@ -829,6 +866,7 @@ slug: YYYY-MM-DD-HHmm-slug
 transcript_source: $TRANSCRIPT_SOURCE
 created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 last_processed_msg:
+bot_sent_ids: ["$INITIAL_MESSAGE_ID"]
 EOF
 chmod 600 "$TMP"
 mv "$TMP" "$AWAITING_REPLY"
@@ -838,6 +876,7 @@ mv "$TMP" "$AWAITING_REPLY"
 - `transcript_source` is the URL or `file://` path captured in Step 2 (Phase 1). The awaiting-reply branch in Step 0 re-fetches the transcript from here when `expand:` or `quote:` keywords arrive — the transcript content itself is **not** stored on disk.
 - `created_at` drives the 30-day expiry. `extend` rewrites this to "now"; `cancel` deletes the file entirely.
 - `last_processed_msg` is empty initially. Step 0's awaiting-reply branch sets it to the Gmail message ID of every user reply it acts on (expand/quote/research/extend/unrecognized), preventing the same reply from being re-processed on the next 15-minute scheduler cycle.
+- `bot_sent_ids` is initialized with the follow-up email's own message-id and grows with every bot reply Step 0 produces (expand/quote/research/unrecognized responses). The dispatcher's bot-vs-user check matches on this array — see Step 0 Step 4. This replaces a prior From-header display-name heuristic that broke when `gws gmail +send` started returning `From: <Display Name> <user@host>` for some sends.
 
 If `$TRANSCRIPT_SOURCE` is empty (rare — Phase 1's Step 2 captures it in all five transcript-search branches plus the Step 0 reply-as-transcript path), leave the field empty in the state file. The Step 0 awaiting-reply branch responds to `expand:` and `quote:` with a graceful "transcript no longer available" message in that case.
 
