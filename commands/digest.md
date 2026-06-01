@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-05-29 — Footer keyword list adds `research: <query>` for symmetry with briefing and follow-up emails (handler lives in commands/follow-up.md awaiting-digest dispatcher). Previous: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename (modelled on briefings_mcp/ledger.py:189-196); includes empty last_processed_msg field for the dedup watermark consumed by commands/follow-up.md awaiting-digest branch. Earlier: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
+<!-- version: 2026-06-01 — Sort flipped to oldest-first so positions stay stable across digests (reply keyword `done: 3` lands on the same item as the prior digest's `done: 3`, as long as nothing above it has been done/dropped/disowned). Overflow now hides the newest tail rather than the oldest, with rationale that older items deserve priority for pruning via reply keywords. Previous: 2026-05-29 — Footer keyword list adds `research: <query>` for symmetry with briefing and follow-up emails (handler lives in commands/follow-up.md awaiting-digest dispatcher). Earlier: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename; includes empty last_processed_msg field for the dedup watermark. Earliest: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -104,11 +104,15 @@ for entry in ledger.iter_entries():
     elif my_email in [a.lower() for a in attendees]:
         owed.append(record)
 
-# Newest first so the most recent commitments stay above the cap. Owed items
-# in particular pile up — the cap keeps the digest scannable; the overflow
-# count is surfaced in the rendered output so it isn't invisible.
-mine.sort(key=lambda r: r["created_at"], reverse=True)
-owed.sort(key=lambda r: r["created_at"], reverse=True)
+# Oldest first so positions stay stable across digests. When a new item is
+# captured, it appends to the bottom of its section rather than pushing every
+# other item down by one — which means the user's reply keywords (`done: 3`,
+# `not-mine: 5`) land on the same items they were referring to in the previous
+# digest, as long as no item above them has been done/dropped/disowned in
+# between. The bonus side-effect: overdue items naturally surface at the top,
+# which doubles as a priority signal.
+mine.sort(key=lambda r: r["created_at"])
+owed.sort(key=lambda r: r["created_at"])
 
 mine_total = len(mine)
 owed_total = len(owed)
@@ -129,7 +133,7 @@ PYEOF
 )
 ```
 
-Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section. Both arrays are pre-sorted newest-first and pre-capped to 15 items each — the long tail is hidden but counted in `mine_hidden` / `owed_hidden`, and the renderer surfaces those counts so suppressed items are visible-by-inference. `mine_total` / `owed_total` carry the un-capped totals for the Slack heads-up.
+Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section. Both arrays are pre-sorted **oldest-first** so existing positions stay stable across digests (reply keywords like `done: 3` land on the same item the user saw in the prior digest, as long as nothing above it has been done/dropped/disowned in between). Both are pre-capped to 15 items each — the cap drops the **newest** overflow, not the oldest, because the oldest items are the ones most worth pruning via reply keywords; surfacing those for action first is the priority signal. The hidden tail is counted in `mine_hidden` / `owed_hidden` and the renderer surfaces those counts. `mine_total` / `owed_total` carry the un-capped totals for the Slack heads-up.
 
 Items whose `owner` is empty or literally `"unassigned"` (typically the result of a prior `not-mine: N` reply) are filtered out of both arrays — they remain in the ledger for audit but stop adding noise to the digest.
 
@@ -256,10 +260,10 @@ Reply to update:
 **Overflow line per section.** After the last numbered item in `## Yours` (and again after `## Owed to you`), if the corresponding `mine_hidden` / `owed_hidden` value is greater than zero, render one italic line:
 
 ```
-*…and N more older items hidden. Reply `not-mine:`, `drop:`, or `done:` to prune this list; older items become visible as you do.*
+*…and N newer items hidden. Reply `not-mine:`, `drop:`, or `done:` to prune this list; newer items become visible as you clear the older ones above.*
 ```
 
-Substitute the actual `N` for `mine_hidden` / `owed_hidden`. Omit the line entirely when the value is zero. The cap is per-section, so a section can be fully shown while the other is overflowing.
+Substitute the actual `N` for `mine_hidden` / `owed_hidden`. Omit the line entirely when the value is zero. The cap is per-section, so a section can be fully shown while the other is overflowing. Note the inversion from prior versions: items are now sorted oldest-first, so the cap hides the *newer* tail rather than the older one. This is deliberate — overdue items belong at the top (action signal), and reply-keyword positions stay stable because new items enter at the bottom rather than pushing every existing item down by one.
 
 **Period themes line (Phase 4):** Below the date heading, before `## Yours`, render an italic one-liner of recurring topics from the ledger. Call `briefings_mcp.query.find_patterns(window_days=60, min_count=3, limit=3)` (no attendee or topic filter — global view). Format: `*Period themes: topic1 (N), topic2 (M), topic3 (K)*`. Omit the line entirely when `find_patterns` returns an empty list. This is contextual scene-setting, not a section heading.
 
