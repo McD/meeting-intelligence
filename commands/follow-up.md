@@ -483,64 +483,28 @@ Read the full transcript document.
 
 ### Coaching-mode short-circuit (Action items only)
 
-Read `COACHING_MODE` from Step 1. If `COACHING_MODE=1`, skip action-item extraction entirely — do not run the four gates, do not enumerate candidates the gates would have evaluated. Emit exactly one audit record to `~/Briefings/${SOURCE_MEETING}-followup-audit.jsonl` (mode 600; see "Four-gate audit log" below for the writer pattern) with the shape:
+Read `COACHING_MODE` from Step 1. If `COACHING_MODE=1`, skip the four-gate evaluation entirely — do not enumerate action-item candidates, do not produce a `**You** — ...` action list in the rendered follow-up, and do not include any `type: "commitment"` entries in Step 4's `ITEMS_JSON` (decisions still go through `ITEMS_JSON` as `type: "decision"`). Step 4's heredoc will write a single sentinel audit record (`reason: "coaching-mode-short-circuit"`) on your behalf.
+
+Continue with the rest of Step 3 normally — still extract the 1-sentence summary, Key decisions, Open questions, Notable threads, and Counterparty read. The short-circuit suppresses only the **Action items** bullet below; everything else flows through Steps 4-6 as usual. The user still gets a follow-up email; the actions tracker just stays clean.
+
+### Four-gate audit log
+
+When `COACHING_MODE=0` (the normal path), every candidate action you consider during the four gates below — **including the ones the gates drop** — must be recorded for the audit log. **You do not write the audit file directly from Step 3**; instead, build a `CANDIDATES_JSON` array as you evaluate candidates and pass it to Step 4, which writes the audit file in the same heredoc that already appends to the ledger (the heredoc demonstrably runs every follow-up, while standalone Step 3 emissions have proven unreliable).
+
+Each candidate record in `CANDIDATES_JSON` has this shape:
 
 ```json
-{"timestamp": "<ISO>", "source_meeting": "<SOURCE_MEETING>", "candidate_summary": "<all candidates suppressed by policy>", "kept": false, "gate_dropped": null, "reason": "coaching-mode-short-circuit"}
-```
-
-After emitting that single record, **continue with the rest of Step 3 normally** — still extract the 1-sentence summary, Key decisions, Open questions, Notable threads, and Counterparty read. The short-circuit suppresses only the **Action items** bullet below; everything else (decisions, summary, transcript link, etc.) still flows through Steps 4-6 as usual. The user still gets a follow-up email; the actions tracker just stays clean.
-
-Skip the "Extract:" list's **Action items** bullet entirely when `COACHING_MODE=1`. In particular, do not produce a `**You** — ...` action list in the rendered follow-up, and do not pass any commitment items into Step 4's `ITEMS_JSON` (decisions still go through `ITEMS_JSON` as `type: "decision"` entries).
-
-### Four-gate audit log (always, unless coaching-mode short-circuited above)
-
-For every candidate action you consider when running the four gates below — **including ones the gates drop** — emit one JSONL record to `~/Briefings/${SOURCE_MEETING}-followup-audit.jsonl`. Record shape:
-
-```json
-{"timestamp": "<ISO>", "source_meeting": "<SOURCE_MEETING>", "candidate_summary": "<first 140 chars of the candidate's phrasing>", "kept": <bool>, "gate_dropped": <1|2|3|4|null>, "reason": "<short>"}
+{"summary": "<first 140 chars of the candidate's phrasing>", "kept": <bool>, "gate_dropped": <1|2|3|4|null>, "reason": "<short>"}
 ```
 
 - For a **kept** candidate (passed all four gates): `{kept: true, gate_dropped: null, reason: "passed-all-gates"}`.
 - For a **dropped** candidate: `{kept: false, gate_dropped: N, reason: "<gate-name>"}` where N is 1-4 and the gate-name is one of `concrete-doer`, `done-state`, `deliverable-or-decision-or-interaction`, `worth-chasing-for-user`.
 
-The emphasis is **completeness, not curation**: every candidate you considered before the gates fired should produce a record, even ones obviously not action items. The audit log is the data feed for SC4 and SC5 in the requirements doc; under-reporting drops makes drift invisible.
+The emphasis is **completeness, not curation**: every candidate you considered before the gates fired should appear in `CANDIDATES_JSON`, even ones obviously not action items. The audit log is the data feed for SC4 and SC5 in the requirements doc; under-reporting drops makes drift invisible.
 
-Write the records via a Python heredoc following the same shape as Step 4's `APPEND_OUT=$(...)` invocation below. Use `_restricted_umask` from `briefings_mcp.ledger` so the file lands at mode 600 (audit records contain transcript-derived candidate summaries that may include strategic or personal content; mode 600 matches `~/.briefings/decisions.jsonl`). Append, do not truncate — multiple force-regenerations of the same meeting accumulate records, each with a distinct `timestamp`.
+The kept candidates also become the `type: "commitment"` entries in `ITEMS_JSON` (Step 4 uses both — `CANDIDATES_JSON` for the audit write, `ITEMS_JSON` for the ledger). They duplicate the kept items between the two arrays so each array is self-consistent for its consumer.
 
-```bash
-AUDIT_FILE="$HOME/Briefings/${SOURCE_MEETING}-followup-audit.jsonl"
-SOURCE_MEETING="$SOURCE_MEETING" AUDIT_FILE="$AUDIT_FILE" \
-CANDIDATES_JSON='[...]' \
-python3 <<'PYEOF'
-import os, json
-from datetime import datetime, timezone
-from briefings_mcp.ledger import _restricted_umask
-
-source_meeting = os.environ["SOURCE_MEETING"]
-audit_file = os.environ["AUDIT_FILE"]
-candidates = json.loads(os.environ["CANDIDATES_JSON"])
-
-now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-with _restricted_umask():
-    with open(audit_file, "a", encoding="utf-8") as f:
-        for c in candidates:
-            record = {
-                "timestamp": now_iso,
-                "source_meeting": source_meeting,
-                "candidate_summary": (c.get("summary") or "")[:140],
-                "kept": bool(c.get("kept")),
-                "gate_dropped": c.get("gate_dropped"),  # 1-4 or None
-                "reason": c.get("reason") or "",
-            }
-            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-import os as _os; _os.chmod(audit_file, 0o600)
-PYEOF
-```
-
-If the audit write errors out, log a one-line WARN to `~/Briefings/scheduler.log` (`"WARN: audit-log write failed for [meeting]: <error>"`) and **continue**. The audit log is informational; it must not block the follow-up itself.
+If `CANDIDATES_JSON` is empty (no action-item candidates found in the transcript), pass an empty array `[]` — Step 4 will write zero candidate records and no sentinel, which is the correct outcome for a meeting that genuinely had no candidates.
 
 ---
 
@@ -589,25 +553,74 @@ For each item, infer **1–3 short topic tags** (e.g. `"pricing"`, `"q3-plan"`, 
 
 **is_external** — compute `true` if any attendee has an email outside `$COMPANY_DOMAIN`, `false` otherwise. Step 5 uses this to gate the `## Counterparty read` section. (The Phase 1 high-stakes flag and its inputs — verdict, attendee_history_count — were removed in Phase 2 along with the Why? capture loop.)
 
-Build the items list and append in one Python invocation. `SOURCE_MEETING` was established in Step 1 (single source of truth — see "Establish per-meeting variables") and is reused here unchanged. The heredoc pattern mirrors `scripts/scheduler.sh` line 81:
+Build the items list and append in one Python invocation. `SOURCE_MEETING` was established in Step 1 (single source of truth — see "Establish per-meeting variables") and is reused here unchanged. The heredoc also writes the per-meeting audit JSONL from `CANDIDATES_JSON` (Step 3 builds it) and `COACHING_MODE` (Step 1 sets it) — moving the audit-write into this heredoc rather than a standalone Step 3 invocation is deliberate: this is the Python invocation that demonstrably runs every follow-up, where Step 3's standalone heredocs proved unreliable. The pattern mirrors `scripts/scheduler.sh` line 81:
 
 ```bash
 APPEND_OUT=$(SOURCE_MEETING="$SOURCE_MEETING" \
+             COACHING_MODE="$COACHING_MODE" \
              ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
              ITEMS_JSON='[
                {"type":"commitment","summary":"Send pricing memo to Acme","topics":["pricing","acme"],"owner":"You","due":"2026-05-26","state":"open"},
                {"type":"decision","summary":"Defer Q3 region rollout until staffing lands","topics":["q3-plan","staffing"],"resolved":true}
              ]' \
+             CANDIDATES_JSON='[
+               {"summary":"Send pricing memo to Acme","kept":true,"gate_dropped":null,"reason":"passed-all-gates"},
+               {"summary":"Position as Y'\''s ally on Pulse","kept":false,"gate_dropped":3,"reason":"deliverable-or-decision-or-interaction"}
+             ]' \
              python3 <<'PYEOF'
 import os, json, sys, uuid
 from datetime import datetime, timezone
 from briefings_mcp import ledger
+from briefings_mcp.ledger import _restricted_umask
 
 source_meeting = os.environ["SOURCE_MEETING"]
 attendees      = json.loads(os.environ["ATTENDEES_JSON"])
 items          = json.loads(os.environ["ITEMS_JSON"])
+candidates     = json.loads(os.environ.get("CANDIDATES_JSON", "[]"))
+coaching_mode  = os.environ.get("COACHING_MODE", "0") == "1"
 
 now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# ── Audit log write (R8 — feeds SC4 / SC5 from the requirements doc) ─────────
+# Coaching mode emits a single sentinel record; normal mode emits one record per
+# candidate the LLM considered (kept + dropped). Failures here are non-fatal —
+# the audit log is informational and must not block the follow-up itself.
+audit_file = os.path.expanduser(f"~/Briefings/{source_meeting}-followup-audit.jsonl")
+if coaching_mode:
+    audit_records = [{
+        "timestamp": now_iso,
+        "source_meeting": source_meeting,
+        "candidate_summary": "<all candidates suppressed by policy>",
+        "kept": False,
+        "gate_dropped": None,
+        "reason": "coaching-mode-short-circuit",
+    }]
+else:
+    audit_records = [
+        {
+            "timestamp": now_iso,
+            "source_meeting": source_meeting,
+            "candidate_summary": (c.get("summary") or "")[:140],
+            "kept": bool(c.get("kept")),
+            "gate_dropped": c.get("gate_dropped"),
+            "reason": c.get("reason") or "",
+        }
+        for c in candidates
+    ]
+
+if audit_records:
+    try:
+        with _restricted_umask():
+            with open(audit_file, "a", encoding="utf-8") as f:
+                for r in audit_records:
+                    f.write(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        os.chmod(audit_file, 0o600)
+    except Exception as exc:
+        print(f"WARN: audit-log write failed for {source_meeting}: {exc}", file=sys.stderr)
+
+# ── Ledger append (existing behavior — kept commitments + decisions only) ────
 results = []
 for item in items:
     item.setdefault("id", str(uuid.uuid4()))
@@ -626,7 +639,7 @@ for item in items:
         print(f"WARN: ledger.append failed for {item.get('summary','?')[:60]!r}: {exc}", file=sys.stderr)
         results.append({"ok": False, "summary": item.get("summary", ""), "error": str(exc)})
 
-print(json.dumps({"results": results}))
+print(json.dumps({"results": results, "audit_records_written": len(audit_records)}))
 PYEOF
 )
 ```
