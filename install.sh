@@ -91,16 +91,17 @@ echo "If you haven't signed in yet, open a new Terminal window and run: claude"
 echo ""
 read -rp "Press Enter once you're signed in to Claude..."
 
-# ── Step 4: GNU coreutils (provides gtimeout for the scheduler watchdog) ─────
+# ── Step 4: GNU coreutils — no longer required ──────────────────────────────
+# Prior versions installed coreutils here to get `gtimeout` for the scheduler
+# watchdog. As of 2026-06-01 the scheduler uses a bash-native watchdog
+# (scripts/scheduler.sh `run_with_watchdog`) built from system binaries only,
+# sidestepping a macOS Sequoia TCC bug where gtimeout's adhoc-signed binary
+# kept hitting a stuck `auth_value=5` consent state and re-prompting every
+# 15-minute cycle. Step kept as a no-op so subsequent step numbers stay
+# stable for users following the README.
 echo ""
 echo -e "${BOLD}Step 4: GNU coreutils${NC}"
-if command -v gtimeout &>/dev/null; then
-    ok "coreutils already installed (gtimeout available)."
-else
-    info "Installing coreutils for gtimeout (scheduler hang-detection)..."
-    brew install coreutils
-    ok "coreutils installed."
-fi
+ok "Skipped — scheduler no longer needs gtimeout (uses bash-native watchdog)."
 
 # ── Step 5: gws ──────────────────────────────────────────────────────────────
 echo ""

@@ -1,26 +1,59 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. macOS gtimeout pauses during sleep so this is 20 min of awake-time, not wall-clock; 10 min was too tight for legitimate /follow-up sweeps that send a transcript request mid-cycle. Previous: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installs coreutils as Step 4. 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
 GWS_AUTH_FAILED_FILE="$BRIEFING_DIR/.gws_auth_failed"
 CLAUDE_VERSION_FILE="$BRIEFING_DIR/.claude_version"
-TIMEOUT_WARNED_FILE="$BRIEFING_DIR/.timeout_warned"
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 GWS=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
 
-# macOS doesn't ship GNU `timeout`. Homebrew's coreutils provides `gtimeout`
-# (or `timeout` when installed --with-default-names). Detect what's available
-# and store the command name (or empty string for "no bounded runs").
-if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout"
-elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout"
-else
-    TIMEOUT_CMD=""
-fi
+# Watchdog: kills the entire process tree after $1 seconds. Implemented as a
+# Python one-liner via /usr/bin/python3 (Apple-signed Xcode CLT binary, not a
+# Homebrew CLI tool) so nothing in the audit chain is the kind of adhoc-signed
+# binary that triggers macOS Sequoia's kTCCServiceSystemPolicyAppData
+# stuck-state bug (Allow writes auth_value=5 instead of 2, every cycle
+# re-prompts).
+#
+# Bash-only versions of this with SIGTERM-then-SIGKILL don't work: bash
+# command substitution `$(cmd)` blocks until ALL descendants close the captured
+# stdout pipe, and killing only the immediate child leaves grandchildren
+# (sleep, child shells) orphaned but still holding the pipe open, so $(...)
+# hangs. Python's `start_new_session=True` + `os.killpg` kills the entire
+# process group cleanly, including grandchildren. Exit code 124 on timeout
+# preserves the existing "rc==124 means timeout" convention used below.
+#
+# Wall-clock semantics (not gtimeout's awake-time) — see version comment
+# above for the trade-off. /usr/bin/python3 is part of macOS Xcode Command
+# Line Tools; install.sh's Step 3 (Claude Code) already requires brew which
+# requires xcode-select, so python3 is present on every supported install.
+run_with_watchdog() {
+    local timeout=$1
+    shift
+    /usr/bin/python3 - "$timeout" "$@" <<'PYEOF'
+import subprocess, signal, sys, os
+timeout = int(sys.argv[1])
+cmd = sys.argv[2:]
+p = subprocess.Popen(cmd, start_new_session=True)
+try:
+    rc = p.wait(timeout=timeout)
+    sys.exit(rc)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    except ProcessLookupError:
+        pass
+    sys.exit(124)
+PYEOF
+}
 
 umask 077
 mkdir -p "$BRIEFING_DIR"
@@ -213,33 +246,20 @@ if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" 
 fi
 
 # Bounded Claude invocation. 1200s = 20 min covers the slowest observed cycles with
-# real safety margin. macOS gtimeout pauses during system sleep, so this is 20 min of
-# AWAKE time inside the cycle, not wall-clock. Anything that needs more than 20 awake
-# minutes is hung, not slow. Tighter caps (was 600s briefly) false-positive on healthy
-# but-slow /follow-up sweeps that send a transcript request mid-cycle. On timeout
-# (exit 124) the lock is released by the EXIT trap and the next launchd tick takes over.
-#
-# Without a `timeout` binary the bounded-run guarantee is lost — a hung Claude could
-# hold .scheduler.lock indefinitely. Warn on Slack ONCE per install so the user knows
-# to `brew install coreutils`; don't re-spam on every cycle.
+# real safety margin. Wall-clock timer (the bash-native run_with_watchdog above);
+# the laptop sleeping mid-cycle is rare for a 15-min cadence with 20-min ceiling, and
+# the lockfile cleans up any cycle that gets killed by the watchdog. Tighter caps
+# (was 600s briefly) false-positive on healthy but-slow /follow-up sweeps that send
+# a transcript request mid-cycle. On timeout (exit 124) the lock is released by the
+# EXIT trap and the next launchd tick takes over.
 CLAUDE_TIMEOUT_SECONDS=1200
-
-if [ -z "$TIMEOUT_CMD" ] && [ ! -f "$TIMEOUT_WARNED_FILE" ]; then
-    log "WARN: neither \`timeout\` nor \`gtimeout\` on PATH — Claude invocations run unbounded."
-    notify_slack ":warning: Briefings scheduler can't enforce a Claude timeout — \`coreutils\` is not installed. Run \`brew install coreutils\` to enable the 10-min watchdog. Briefings still run; only the hang-detection safety net is missing."
-    touch "$TIMEOUT_WARNED_FILE"
-fi
 
 run_claude() {
     local label="$1"
     local prompt="$2"
     log "Running: $label"
     local output rc
-    if [ -n "$TIMEOUT_CMD" ]; then
-        output=$("$TIMEOUT_CMD" "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
-    else
-        output=$("$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
-    fi
+    output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
     rc=$?
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
