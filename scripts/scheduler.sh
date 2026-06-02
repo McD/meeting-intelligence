@@ -155,9 +155,8 @@ echo $$ > "$LOCK_FILE"
 # Single quotes: $LOCK_FILE expands at trap-firing time, not trap-definition.
 trap 'rm -f "$LOCK_FILE"' EXIT
 
-# After some Claude Code updates, --dangerously-skip-permissions can be re-prompted,
-# which the headless scheduler cannot answer. Flagging the version change up front means
-# the user knows what to do if briefings start failing silently afterwards.
+# Track Claude Code version changes so we can run TCC cleanup proactively on update.
+# Flagging the change up front gives the user context if briefings start failing.
 #
 # The CLAUDE_VERSION_FILE is NOT written here — it is written only after a successful
 # Claude invocation later in this script. Writing it eagerly would mean a single missed
@@ -333,7 +332,7 @@ run_claude() {
     local prompt="$2"
     log "Running: $label"
     local output rc
-    output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p --dangerously-skip-permissions "$prompt" 2>&1)
+    output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p "$prompt" 2>&1)
     rc=$?
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
