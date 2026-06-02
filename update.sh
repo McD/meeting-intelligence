@@ -139,6 +139,90 @@ else
     fi
 fi
 
+# ── Ensure tool permissions are up to date ───────────────────────────────────
+# New permissions may be required by updated command files. Merge without
+# removing any existing entries the user may have added themselves.
+MERGE_RESULT=$(HOME="$HOME" python3 <<'PYEOF'
+import json, os
+
+settings_path = os.path.join(os.environ['HOME'], '.claude', 'settings.json')
+home = os.environ['HOME']
+
+REQUIRED = [
+    "Bash(gws:*)", "Bash(python3:*)", "Bash(curl:*)", "Bash(date:*)",
+    "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)", "Bash(mv:*)",
+    "Bash(chmod:*)", "Bash(cat:*)", "Bash(readlink:*)", "Bash(echo:*)",
+    "Bash(sqlite3:*)",
+    f"Read({home}/.briefings_config)",
+    f"Read({home}/.slack_webhook)",
+    f"Read({home}/Briefings/*)",
+    f"Read({home}/.briefings/*)",
+    f"Read({home}/Documents/*)",
+    f"Read({home}/Desktop/*)",
+    f"Read({home}/Downloads/*)",
+    f"Write({home}/Briefings/*)",
+    "mcp__claude_ai_Gmail__search_threads",
+    "mcp__claude_ai_Gmail__get_thread",
+    "mcp__claude_ai_Gmail__list_labels",
+    "mcp__claude_ai_Gmail__list_drafts",
+    "mcp__claude_ai_Gmail__create_draft",
+    "mcp__claude_ai_Gmail__label_message",
+    "mcp__claude_ai_Gmail__label_thread",
+    "mcp__claude_ai_Gmail__unlabel_message",
+    "mcp__claude_ai_Gmail__unlabel_thread",
+    "mcp__claude_ai_Google_Calendar__list_events",
+    "mcp__claude_ai_Google_Calendar__get_event",
+    "mcp__claude_ai_Google_Calendar__list_calendars",
+    "mcp__claude_ai_Google_Drive__search_files",
+    "mcp__claude_ai_Google_Drive__read_file_content",
+    "mcp__claude_ai_Google_Drive__download_file_content",
+    "mcp__claude_ai_Google_Drive__get_file_metadata",
+    "mcp__claude_ai_Slack__slack_send_message",
+    "mcp__claude_ai_Slack__slack_search_public_and_private",
+    "mcp__claude_ai_Slack__slack_search_users",
+    "mcp__claude_ai_Slack__slack_read_channel",
+    "mcp__claude_ai_Slack__slack_read_thread",
+    "mcp__claude_ai_Slack__slack_read_user_profile",
+    "mcp__briefings__search_decisions",
+    "mcp__briefings__get_decision_by_id",
+    "mcp__briefings__list_attendees",
+    "WebFetch(*)",
+    "WebSearch(*)",
+]
+
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+perms = settings.setdefault('permissions', {})
+existing = set(perms.get('allow', []))
+added = [e for e in REQUIRED if e not in existing]
+
+if added:
+    perms['allow'] = list(existing | set(REQUIRED))
+    tmp = settings_path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(settings, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, settings_path)
+    print(f"ADDED:{len(added)}")
+else:
+    print("PRESENT")
+PYEOF
+)
+
+if echo "$MERGE_RESULT" | grep -q "^ADDED:"; then
+    COUNT=$(echo "$MERGE_RESULT" | grep "^ADDED:" | cut -d: -f2)
+    ok "Added $COUNT new tool permission(s) to ~/.claude/settings.json."
+elif echo "$MERGE_RESULT" | grep -q "^PRESENT"; then
+    ok "Tool permissions up to date."
+else
+    warn "Could not update ~/.claude/settings.json — re-run install.sh if the scheduler stalls."
+fi
+
 echo ""
 echo -e "${GREEN}${BOLD}Update complete!${NC} Now on version $NEW_VERSION."
 echo ""
