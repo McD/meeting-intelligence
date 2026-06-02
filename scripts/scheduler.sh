@@ -151,7 +151,8 @@ fi
 
 if [ -f "$LOCK_FILE" ]; then
     pid=$(cat "$LOCK_FILE")
-    if kill -0 "$pid" 2>/dev/null; then
+    lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
+    if [ "$lock_age" -lt 1800 ] && kill -0 "$pid" 2>/dev/null; then
         log "Already running (PID $pid), skipping."
         exit 0
     fi
@@ -215,10 +216,18 @@ import os, sys, json
 from datetime import datetime, timezone, timedelta
 
 def parse_iso(s):
-    # Python 3.9 fromisoformat doesn't handle 'Z' — normalise to +00:00
     if s.endswith('Z'):
         s = s[:-1] + '+00:00'
-    return datetime.fromisoformat(s)
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        # strptime fallback for Python 3.9 which has a narrower fromisoformat
+        for fmt in ('%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M%z'):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        raise
 
 raw = os.environ.get('CAL_DATA', '')
 # gws prints a "Using keyring backend" preamble before JSON; find first '{'

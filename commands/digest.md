@@ -1,5 +1,5 @@
 # Actions tracker digest
-<!-- version: 2026-06-01 — Sort flipped to oldest-first so positions stay stable across digests (reply keyword `done: 3` lands on the same item as the prior digest's `done: 3`, as long as nothing above it has been done/dropped/disowned). Overflow now hides the newest tail rather than the oldest, with rationale that older items deserve priority for pruning via reply keywords. Previous: 2026-05-29 — Footer keyword list adds `research: <query>` for symmetry with briefing and follow-up emails (handler lives in commands/follow-up.md awaiting-digest dispatcher). Earlier: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename; includes empty last_processed_msg field for the dedup watermark. Earliest: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
+<!-- version: 2026-06-02 — HTML renderer extracted to briefings_mcp.render. Previous: 2026-06-01 — Sort flipped to oldest-first so positions stay stable across digests (reply keyword `done: 3` lands on the same item as the prior digest's `done: 3`, as long as nothing above it has been done/dropped/disowned). Overflow now hides the newest tail rather than the oldest, with rationale that older items deserve priority for pruning via reply keywords. Previous: 2026-05-29 — Footer keyword list adds `research: <query>` for symmetry with briefing and follow-up emails (handler lives in commands/follow-up.md awaiting-digest dispatcher). Earlier: 2026-05-28 — Step 6 state file creation now uses atomic tmp+rename; includes empty last_processed_msg field for the dedup watermark. Earliest: Phase 4.1 — Step 5 email renderer inlined explicitly; handles *italic* and numbered (1.) lists. Phase 4 added period themes one-liner. Phase 3 v1 — twice-weekly digest of open commitments with reply-keyword updates. -->
 
 Read open commitments from the ledger and deliver an actions tracker email plus Slack heads-up. Idempotent: skip if a digest file already exists for today.
 
@@ -309,54 +309,7 @@ The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N da
 **Email** — to `$MY_EMAIL` using `--html`, subject: `Actions tracker — <Day> <DD Mon> <YYYY>`. Convert the markdown to HTML using the exact Python snippet below — same renderer as `commands/follow-up.md` Step 6, handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Do not improvise a different renderer; the digest's italic styling (`*Period themes:*`, `*(open N days)*`, `*done?*`) and numbered lists depend on this behaviour.
 
 ```bash
-HTML=$(DIGEST_FILE="$DIGEST_FILE" python3 << 'PYEOF'
-import os, re
-
-def inline(text):
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'(?<![\w*])\*([^*\n]+?)\*(?![\w*])', r'<i>\1</i>', text)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-    return text
-
-def close_lists(out, state):
-    if state['ul']: out.append('</ul>'); state['ul'] = False
-    if state['ol']: out.append('</ol>'); state['ol'] = False
-
-lines = open(os.environ['DIGEST_FILE']).read().split('\n')
-out = []
-state = {'ul': False, 'ol': False}
-
-for line in lines:
-    if line.startswith('# '):
-        close_lists(out, state)
-        out.append(f'<h2 style="margin:0 0 4px 0">{inline(line[2:])}</h2>')
-    elif line.startswith('## '):
-        close_lists(out, state)
-        out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{inline(line[3:])}</h3>')
-    elif line.startswith('### '):
-        close_lists(out, state)
-        out.append(f'<h4 style="margin:12px 0 2px 0">{inline(line[4:])}</h4>')
-    elif re.match(r'^\s*- ', line):
-        if state['ol']: out.append('</ol>'); state['ol'] = False
-        content = re.sub(r'^\s*- ', '', line)
-        if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif re.match(r'^\s*\d+\.\s+', line):
-        if state['ul']: out.append('</ul>'); state['ul'] = False
-        content = re.sub(r'^\s*\d+\.\s+', '', line)
-        if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif line.strip() == '':
-        close_lists(out, state)
-        out.append('<div style="margin:6px 0"></div>')
-    else:
-        close_lists(out, state)
-        out.append(f'<p style="margin:3px 0">{inline(line)}</p>')
-
-close_lists(out, state)
-print('\n'.join(out))
-PYEOF
-)
+HTML=$(python3 -m briefings_mcp.render "$DIGEST_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Actions tracker — $(date '+%A %-d %b %Y')" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 SEND_MSG_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")

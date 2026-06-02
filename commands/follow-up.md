@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Previous: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -774,57 +774,7 @@ Send via both channels. Email is sent first because its `threadId` is needed for
 Convert markdown to HTML using this exact Python snippet (save the follow-up file first, then run):
 
 ```bash
-HTML=$(FOLLOWUP_FILE="$FOLLOWUP_FILE" python3 << 'PYEOF'
-import os, re
-
-def inline(text):
-    # Bold first so that *italic* doesn't eat into ** delimiters.
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # Italic — single-asterisk-delimited. Negative lookarounds avoid ** delimiters
-    # and the start/end of pre-existing bold spans.
-    text = re.sub(r'(?<![\w*])\*([^*\n]+?)\*(?![\w*])', r'<i>\1</i>', text)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-    return text
-
-def close_lists(out, state):
-    if state['ul']: out.append('</ul>'); state['ul'] = False
-    if state['ol']: out.append('</ol>'); state['ol'] = False
-
-lines = open(os.environ['FOLLOWUP_FILE']).read().split('\n')
-out = []
-state = {'ul': False, 'ol': False}
-
-for line in lines:
-    if line.startswith('# '):
-        close_lists(out, state)
-        out.append(f'<h2 style="margin:0 0 4px 0">{inline(line[2:])}</h2>')
-    elif line.startswith('## '):
-        close_lists(out, state)
-        out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{inline(line[3:])}</h3>')
-    elif line.startswith('### '):
-        close_lists(out, state)
-        out.append(f'<h4 style="margin:12px 0 2px 0">{inline(line[4:])}</h4>')
-    elif re.match(r'^\s*- ', line):
-        if state['ol']: out.append('</ol>'); state['ol'] = False
-        content = re.sub(r'^\s*- ', '', line)
-        if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif re.match(r'^\s*\d+\.\s+', line):
-        if state['ul']: out.append('</ul>'); state['ul'] = False
-        content = re.sub(r'^\s*\d+\.\s+', '', line)
-        if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif line.strip() == '':
-        close_lists(out, state)
-        out.append('<div style="margin:6px 0"></div>')
-    else:
-        close_lists(out, state)
-        out.append(f'<p style="margin:3px 0">{inline(line)}</p>')
-
-close_lists(out, state)
-print('\n'.join(out))
-PYEOF
-)
+HTML=$(python3 -m briefings_mcp.render "$FOLLOWUP_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
@@ -836,22 +786,9 @@ THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.
 ```bash
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 if [ -n "$SLACK_WEBHOOK" ]; then
-FOLLOWUP_FILE="$FOLLOWUP_FILE" python3 -c "
-import os, sys, re
-text = open(os.environ['FOLLOWUP_FILE']).read()
-text = re.sub(r'^### (.+)$', r'*\1*', text, flags=re.MULTILINE)
-text = re.sub(r'^## (.+)$', r'\n*\1*', text, flags=re.MULTILINE)
-text = re.sub(r'^# (.+)$', r'*\1*', text, flags=re.MULTILINE)
-text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
-text = text[:3000]
-print(text)
-" | python3 -c "
-import sys, json
-text = sys.stdin.read()
-payload = json.dumps({'text': text})
-print(payload)
-" | curl -s -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d @-
+MRKDWN=$(python3 -m briefings_mcp.render "$FOLLOWUP_FILE" mrkdwn)
+payload=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MRKDWN")
+curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d "$payload" >/dev/null 2>&1 || true
 fi
 ```
 

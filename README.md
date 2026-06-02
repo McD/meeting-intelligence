@@ -19,12 +19,20 @@ The thing that makes the briefings actually useful is the cross-source context. 
 
 ## Prerequisites
 
-- macOS (Apple Silicon or Intel)
-- A Google Workspace account
-- A Claude Max subscription, so the scheduler can run unattended
-- A private Slack channel + incoming webhook URL (optional)
+- **macOS** — Ventura 13 or later (Sonoma 14 and Sequoia 15 recommended; Apple Silicon or Intel)
+- **[Claude Max subscription](https://claude.ai)** — the scheduler invokes Claude Code headless (`claude -p`); a Pro plan or API key alone is not enough
+- **Google Workspace account** — Gmail, Calendar, and Drive must be enabled
+- **Slack** (optional) — a private channel plus an incoming webhook URL; briefings and follow-ups arrive by email even without Slack
 
-The installer sets up Homebrew, Node.js, [Claude Code](https://claude.com/claude-code), and [gws](https://github.com/googleworkspace/cli) automatically. gws uses its own bundled OAuth client, so you do not need to create a Google Cloud project.
+The installer sets up Homebrew, Node.js, Python 3.11+, [Claude Code](https://claude.com/claude-code), and [gws](https://github.com/googleworkspace/cli) automatically. gws uses its own bundled OAuth client, so you do not need to create a Google Cloud project.
+
+## Known limitations
+
+- **macOS only.** The scheduler uses launchd for background scheduling. Linux and Windows are not supported.
+- **Claude Max required.** The scheduler runs `claude -p` headless on each active cycle. The Pro plan and raw API keys do not support headless invocations; a Max subscription is required.
+- **Google Workspace only.** The `gws` CLI handles Gmail, Calendar, and Drive access through a bundled OAuth client that targets Workspace accounts. Personal Gmail accounts are not supported.
+- **Slack is optional.** Without `~/.slack_webhook`, briefings and follow-ups are delivered by email only; Slack heads-up and reply keywords still work via email.
+- **Calendar matching is heuristic.** The scheduler skips meetings with 0–1 attendees, all-day events, and declined events. Meetings without an attendee list (self-blocks, tasks) are also skipped.
 
 ## Install
 

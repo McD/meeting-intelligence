@@ -1,5 +1,5 @@
 # Pre-meeting briefing
-<!-- version: 2026-05-29 — Briefings now create an awaiting-reply state file (filename pattern `*-awaiting-reply-briefing-<slug>.md` to avoid colliding with the follow-up's awaiting-reply file). Adds reply-keyword footer to the briefing markdown (`research: <query>`, `cancel`, `extend`) so replies to briefings land in the same dispatcher used by follow-ups. Step 7 HTML renderer upgraded to match `commands/follow-up.md` Step 6 / `commands/digest.md` Step 5 (italic, numbered lists, links) — consistent look and feel across every outbound email. Previous: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Earlier: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
+<!-- version: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render; fixes open('BRIEFING_FILE') literal bug in Slack block. Previous: 2026-05-29 — Briefings now create an awaiting-reply state file (filename pattern `*-awaiting-reply-briefing-<slug>.md` to avoid colliding with the follow-up's awaiting-reply file). Adds reply-keyword footer to the briefing markdown (`research: <query>`, `cancel`, `extend`) so replies to briefings land in the same dispatcher used by follow-ups. Step 7 HTML renderer upgraded to match `commands/follow-up.md` Step 6 / `commands/digest.md` Step 5 (italic, numbered lists, links) — consistent look and feel across every outbound email. Previous: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Earlier: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
 
 Generate a briefing document for upcoming meetings (internal and external), pulling context from Gmail, Drive, and Slack.
 
@@ -422,54 +422,7 @@ After saving and quality-checking, deliver via both channels:
 **Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`. Use the **same renderer** as `commands/follow-up.md` Step 6 and `commands/digest.md` Step 5 — handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Consistency across every email this system sends is intentional; do not improvise a different renderer here. Capture the `gws gmail +send` JSON response so the `threadId` is available for the awaiting-reply state file below:
 
 ```bash
-HTML=$(BRIEFING_FILE="$BRIEFING_FILE" python3 << 'PYEOF'
-import os, re
-
-def inline(text):
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'(?<![\w*])\*([^*\n]+?)\*(?![\w*])', r'<i>\1</i>', text)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-    return text
-
-def close_lists(out, state):
-    if state['ul']: out.append('</ul>'); state['ul'] = False
-    if state['ol']: out.append('</ol>'); state['ol'] = False
-
-lines = open(os.environ['BRIEFING_FILE']).read().split('\n')
-out = []
-state = {'ul': False, 'ol': False}
-
-for line in lines:
-    if line.startswith('# '):
-        close_lists(out, state)
-        out.append(f'<h2 style="margin:0 0 4px 0">{inline(line[2:])}</h2>')
-    elif line.startswith('## '):
-        close_lists(out, state)
-        out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{inline(line[3:])}</h3>')
-    elif line.startswith('### '):
-        close_lists(out, state)
-        out.append(f'<h4 style="margin:12px 0 2px 0">{inline(line[4:])}</h4>')
-    elif re.match(r'^\s*- ', line):
-        if state['ol']: out.append('</ol>'); state['ol'] = False
-        content = re.sub(r'^\s*- ', '', line)
-        if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif re.match(r'^\s*\d+\.\s+', line):
-        if state['ul']: out.append('</ul>'); state['ul'] = False
-        content = re.sub(r'^\s*\d+\.\s+', '', line)
-        if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
-        out.append(f'<li style="margin:3px 0">{inline(content)}</li>')
-    elif line.strip() == '':
-        close_lists(out, state)
-        out.append('<div style="margin:6px 0"></div>')
-    else:
-        close_lists(out, state)
-        out.append(f'<p style="margin:3px 0">{inline(line)}</p>')
-
-close_lists(out, state)
-print('\n'.join(out))
-PYEOF
-)
+HTML=$(python3 -m briefings_mcp.render "$BRIEFING_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
@@ -478,25 +431,11 @@ THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.
 ```bash
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 ```
-- If found, convert the markdown to Slack mrkdwn format using this Python snippet, then POST it:
+- If found, convert the markdown to Slack mrkdwn format and POST it:
 ```bash
-python3 -c "
-import sys, re
-text = open('BRIEFING_FILE').read()
-# Convert markdown to Slack mrkdwn
-text = re.sub(r'^### (.+)$', r'*\1*', text, flags=re.MULTILINE)   # ### → *bold*
-text = re.sub(r'^## (.+)$', r'\n*\1*', text, flags=re.MULTILINE)  # ## → *bold* with space
-text = re.sub(r'^# (.+)$', r'*\1*', text, flags=re.MULTILINE)     # # → *bold*
-text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)                    # **bold** → *bold*
-text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)       # [text](url) → <url|text>
-text = text[:3000]
-print(text)
-" | python3 -c "
-import sys, json
-text = sys.stdin.read()
-payload = json.dumps({'text': text})
-print(payload)
-" | curl -s -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d @-
+MRKDWN=$(python3 -m briefings_mcp.render "$BRIEFING_FILE" mrkdwn)
+payload=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MRKDWN")
+curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d "$payload" >/dev/null 2>&1 || true
 ```
 - If not found, skip Slack silently and note to the user that they can enable Slack delivery by saving their Slack incoming webhook URL to `~/.slack_webhook`.
 
