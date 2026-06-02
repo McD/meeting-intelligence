@@ -608,7 +608,7 @@ APPEND_OUT=$(SOURCE_MEETING="$SOURCE_MEETING" \
                {"summary":"Send pricing memo to Acme","kept":true,"gate_dropped":null,"reason":"passed-all-gates"},
                {"summary":"Position as Y'\''s ally on Pulse","kept":false,"gate_dropped":3,"reason":"deliverable-or-decision-or-interaction"}
              ]' \
-             python3 <<'PYEOF'
+             ~/.briefings/venv/bin/python3 <<'PYEOF'
 import os, json, sys, uuid
 from datetime import datetime, timezone
 from briefings_mcp import ledger
@@ -750,7 +750,7 @@ Skip any section that has no content. Specifically:
 
   ```bash
   PATTERNS_OUT=$(TOPICS_JSON='["pricing","q3-plan"]' \
-                 python3 <<'PYEOF'
+                 ~/.briefings/venv/bin/python3 <<'PYEOF'
   import os, json
   from briefings_mcp.query import find_patterns
   topics = json.loads(os.environ["TOPICS_JSON"])
@@ -774,7 +774,7 @@ Send via both channels. Email is sent first because its `threadId` is needed for
 Convert markdown to HTML using this exact Python snippet (save the follow-up file first, then run):
 
 ```bash
-HTML=$(python3 -m briefings_mcp.render "$FOLLOWUP_FILE")
+HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$FOLLOWUP_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
@@ -786,7 +786,7 @@ THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.
 ```bash
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 if [ -n "$SLACK_WEBHOOK" ]; then
-MRKDWN=$(python3 -m briefings_mcp.render "$FOLLOWUP_FILE" mrkdwn)
+MRKDWN=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$FOLLOWUP_FILE" mrkdwn)
 payload=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MRKDWN")
 curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d "$payload" >/dev/null 2>&1 || true
 fi

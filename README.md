@@ -68,13 +68,13 @@ Optional flags exercise the real Claude-call paths (each costs a few API spend a
 - `--with-followup` — force-regenerate the latest follow-up and assert Phase 1 shape
 - `--with-digest` — force-generate today's digest and assert Phase 3 shape
 
-**Watch the scheduler in real time:**
+**How to know it's working:** the first real signal is an email (and, if Slack is configured, a Slack message) arriving roughly two hours before your next eligible calendar event — a meeting with 2+ attendees that you haven't declined. If you have no meetings in the next few hours, nothing will appear until one is approaching. To verify the scheduler is running in the meantime:
 
 ```bash
 tail -f ~/Briefings/scheduler.log
 ```
 
-A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending.
+A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and exits in under a second. A cycle that runs Claude logs `Running: briefing+follow-up` and takes 30 seconds to a few minutes depending on what's pending. If you see only `Pre-flight: nothing to do` entries and you expect a briefing, check that your next calendar event has at least two attendees and is not marked declined.
 
 **Reply keywords on briefing, follow-up, and digest emails** — `research: <query>`, `cancel`, `extend` (every email); plus `expand: <request>`, `quote: <topic>` (follow-up only — both require a transcript); plus `done: N`, `done-owed: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N` (digest only). All are picked up by the next scheduler cycle from the awaiting-reply / awaiting-digest state file written when the email was sent. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 

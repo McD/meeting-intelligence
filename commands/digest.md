@@ -59,7 +59,7 @@ Use a Python heredoc to read `~/.briefings/decisions.jsonl` via `briefings_mcp.l
 Include both `state: "open"` and `state: "in-flight"` commitments (both are still in flight from the user's perspective). Decisions are not in scope here.
 
 ```bash
-LEDGER_OUT=$(MY_EMAIL="$MY_EMAIL" MY_NAME="$MY_NAME" python3 <<'PYEOF'
+LEDGER_OUT=$(MY_EMAIL="$MY_EMAIL" MY_NAME="$MY_NAME" ~/.briefings/venv/bin/python3 <<'PYEOF'
 import os, json, sys
 from datetime import datetime, timezone
 from briefings_mcp import ledger
@@ -286,7 +286,7 @@ Substitute the actual `N` for `mine_hidden` / `owed_hidden`. Omit the line entir
 **Period themes line (Phase 4):** Below the date heading, before `## Yours`, render an italic one-liner of recurring topics from the ledger. Call `briefings_mcp.query.find_patterns(window_days=60, min_count=3, limit=3)` (no attendee or topic filter — global view). Format: `*Period themes: topic1 (N), topic2 (M), topic3 (K)*`. Omit the line entirely when `find_patterns` returns an empty list. This is contextual scene-setting, not a section heading.
 
 ```bash
-THEMES_OUT=$(python3 <<'PYEOF'
+THEMES_OUT=$(~/.briefings/venv/bin/python3 <<'PYEOF'
 import json
 from briefings_mcp.query import find_patterns
 print(json.dumps(find_patterns(window_days=60, min_count=3, limit=3)))
@@ -309,7 +309,7 @@ The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N da
 **Email** — to `$MY_EMAIL` using `--html`, subject: `Actions tracker — <Day> <DD Mon> <YYYY>`. Convert the markdown to HTML using the exact Python snippet below — same renderer as `commands/follow-up.md` Step 6, handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Do not improvise a different renderer; the digest's italic styling (`*Period themes:*`, `*(open N days)*`, `*done?*`) and numbered lists depend on this behaviour.
 
 ```bash
-HTML=$(python3 -m briefings_mcp.render "$DIGEST_FILE")
+HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$DIGEST_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Actions tracker — $(date '+%A %-d %b %Y')" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 SEND_MSG_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")

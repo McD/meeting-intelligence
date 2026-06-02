@@ -195,7 +195,7 @@ Right after `$DELTA_OUT`, gather pattern flags for the SITREP block. Patterns ar
 
 ```bash
 PATTERNS_OUT=$(ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
-               python3 <<'PYEOF'
+               ~/.briefings/venv/bin/python3 <<'PYEOF'
 import os, json
 from briefings_mcp.query import find_patterns
 
@@ -422,7 +422,7 @@ After saving and quality-checking, deliver via both channels:
 **Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`. Use the **same renderer** as `commands/follow-up.md` Step 6 and `commands/digest.md` Step 5 — handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Consistency across every email this system sends is intentional; do not improvise a different renderer here. Capture the `gws gmail +send` JSON response so the `threadId` is available for the awaiting-reply state file below:
 
 ```bash
-HTML=$(python3 -m briefings_mcp.render "$BRIEFING_FILE")
+HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$BRIEFING_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
@@ -433,7 +433,7 @@ SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 ```
 - If found, convert the markdown to Slack mrkdwn format and POST it:
 ```bash
-MRKDWN=$(python3 -m briefings_mcp.render "$BRIEFING_FILE" mrkdwn)
+MRKDWN=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$BRIEFING_FILE" mrkdwn)
 payload=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MRKDWN")
 curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' -d "$payload" >/dev/null 2>&1 || true
 ```
