@@ -104,7 +104,17 @@ CURRENT_CLAUDE_VERSION=$("$CLAUDE" --version 2>/dev/null | head -1 || echo "unkn
 LAST_CLAUDE_VERSION=$(cat "$CLAUDE_VERSION_FILE" 2>/dev/null || echo "")
 if [ -n "$LAST_CLAUDE_VERSION" ] && [ "$CURRENT_CLAUDE_VERSION" != "$LAST_CLAUDE_VERSION" ]; then
     log "Claude Code version changed: $LAST_CLAUDE_VERSION → $CURRENT_CLAUDE_VERSION"
-    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). macOS will show an App Management prompt on the next scheduler cycle. *Click Allow when it appears* otherwise briefings will fail silently until you do. If you miss it, open a terminal and run \`claude\` once interactively to clear any new permission prompts before the next cycle."
+    # Proactively fix any auth_value=5 TCC rows introduced by the new versioned binary.
+    # On macOS Sequoia, clicking Allow on the per-version App Management prompt writes
+    # auth_value=5 (re-prompt-always) instead of auth_value=2 (allowed). The unstick
+    # helper UPDATEs 5→2 for live binary paths so the scheduler cycle can proceed
+    # without a re-prompt loop. Run before the Claude invocation below.
+    UNSTICK="$HOME/.local/bin/claude-tcc-unstick"
+    if [ -x "$UNSTICK" ]; then
+        log "Version bump: running TCC cleanup for new binary."
+        "$UNSTICK" 2>&1 | tee -a "$BRIEFING_DIR/scheduler.log" || true
+    fi
+    notify_slack ":sparkles: Claude Code updated (\`$LAST_CLAUDE_VERSION\` → \`$CURRENT_CLAUDE_VERSION\`). Running TCC cleanup automatically. A one-time macOS permission prompt may still appear — click Allow if it does, then TCC cleanup will keep it stable. If briefings fail after the update, check \`~/Briefings/scheduler.log\`."
 fi
 
 # === Pre-flight gate ===
