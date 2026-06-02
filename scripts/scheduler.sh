@@ -55,6 +55,68 @@ except subprocess.TimeoutExpired:
 PYEOF
 }
 
+# Weekly health summary: parse scheduler.log for the last 7 days and Slack-notify.
+# Called once per week during the Monday cleanup window (see below).
+generate_health_summary() {
+    local log="$BRIEFING_DIR/scheduler.log"
+    [ -f "$log" ] || return 0
+    [ -n "$SLACK_WEBHOOK" ] || return 0
+
+    local summary
+    summary=$(/usr/bin/python3 - "$log" <<'PYEOF'
+import re, sys
+from datetime import datetime, timezone, timedelta
+
+log_path = sys.argv[1]
+since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+
+skipped = ran = done = t_timeout = t_auth = t_perm = t_other = 0
+
+with open(log_path, errors='replace') as f:
+    for line in f:
+        m = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]', line)
+        if not m:
+            continue
+        try:
+            ts = datetime.strptime(m.group(1), '%Y-%m-%d %H:%M')
+        except ValueError:
+            continue
+        if ts < since:
+            continue
+        if 'skipped Claude' in line:
+            skipped += 1
+        elif line.rstrip().endswith('Done.'):
+            done += 1
+        elif 'Running:' in line:
+            ran += 1
+        elif 'timed out' in line:
+            t_timeout += 1
+        elif 'auth failure' in line or 'OAuth token' in line:
+            t_auth += 1
+        elif 'permission prompt' in line:
+            t_perm += 1
+        elif 'ERROR:' in line:
+            t_other += 1
+
+total = skipped + ran
+failures = t_timeout + t_auth + t_perm + t_other
+
+lines = [":bar_chart: *Scheduler health (last 7 days)*"]
+lines.append(f"  {total} cycles — {skipped} skipped, {ran} ran Claude")
+failure_detail = ", ".join(filter(None, [
+    f"{t_timeout} timeout" if t_timeout else "",
+    f"{t_auth} auth" if t_auth else "",
+    f"{t_perm} permission" if t_perm else "",
+    f"{t_other} other" if t_other else "",
+]))
+lines.append(f"  {done} successful, {failures} failed" + (f" ({failure_detail})" if failures else ""))
+print("\\n".join(lines))
+PYEOF
+    )
+
+    [ -n "$summary" ] && notify_slack "$summary"
+}
+
 umask 077
 mkdir -p "$BRIEFING_DIR"
 
@@ -73,11 +135,13 @@ if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler
     mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
 fi
 
-# Mondays before 09:16 (one cycle window) — keep ~Briefings/ from growing unbounded.
+# Mondays before 09:16 (one cycle window) — keep ~/Briefings/ from growing unbounded,
+# and send the weekly health summary to Slack.
 if [ "$(date +%u)" = "1" ] && [[ "$(date +%H:%M)" < "09:16" ]]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
     find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
     log "Cleaned up files older than 30 days."
+    generate_health_summary
 fi
 
 if [ -f "$LOCK_FILE" ]; then
