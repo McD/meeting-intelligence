@@ -65,10 +65,10 @@ generate_health_summary() {
     local summary
     summary=$(/usr/bin/python3 - "$log" <<'PYEOF'
 import re, sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 log_path = sys.argv[1]
-since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+since = datetime.now() - timedelta(days=7)
 
 skipped = ran = done = t_timeout = t_auth = t_perm = t_other = 0
 
@@ -125,9 +125,11 @@ notify_slack() {
     [ -n "$SLACK_WEBHOOK" ] || return 0
     # --max-time/--connect-timeout: Slack stalls must not hold .scheduler.lock.
     # Delivery is fire-and-forget; nothing downstream depends on the response.
+    local payload
+    payload=$(/usr/bin/python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$1")
     curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" \
         -H 'Content-type: application/json' \
-        -d "{\"text\": \"$1\"}" >/dev/null 2>&1 || true
+        -d "$payload" >/dev/null 2>&1 || true
 }
 
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
@@ -135,13 +137,16 @@ if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler
     mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
 fi
 
-# Mondays before 09:16 (one cycle window) — keep ~/Briefings/ from growing unbounded,
-# and send the weekly health summary to Slack.
-if [ "$(date +%u)" = "1" ] && [[ "$(date +%H:%M)" < "09:16" ]]; then
+# Monday, once per day — keep ~/Briefings/ from growing unbounded and send the
+# weekly health summary to Slack. Sentinel file prevents multi-fire on every
+# cycle before 09:00 (the old `< 09:16` window ran up to 38 times per Monday).
+WEEKLY_SENTINEL="$BRIEFING_DIR/.last_weekly_summary"
+if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL" 2>/dev/null)" ]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
     find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
     log "Cleaned up files older than 30 days."
     generate_health_summary
+    date +%Y-%m-%d > "$WEEKLY_SENTINEL"
 fi
 
 if [ -f "$LOCK_FILE" ]; then
@@ -295,10 +300,6 @@ else
     # Calendar fetch failed for a non-auth reason — fail open so we don't silently miss work
     log "WARN: calendar fetch failed, invoking Claude as fallback."
     NEED_BRIEFING=1
-    NEED_FOLLOWUP=1
-fi
-
-if ls "$BRIEFING_DIR"/*-awaiting-*.md >/dev/null 2>&1; then
     NEED_FOLLOWUP=1
 fi
 

@@ -315,7 +315,7 @@ echo -e "${BOLD}Step 11: Decision ledger and MCP server${NC}"
 # no re-install. The MCP server is registered as the absolute venv-python
 # path, so `python -m briefings_mcp` resolves from any cwd Claude launches in.
 
-# Step 10a: detect (or install) a Python >=3.10
+# Step 11a: detect (or install) a Python >=3.10
 RUNTIME_PYTHON=""
 for candidate in python3.13 python3.12 python3.11 python3.10; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -336,7 +336,7 @@ if [ -z "$RUNTIME_PYTHON" ]; then
 fi
 ok "Using Python: $RUNTIME_PYTHON ($("$RUNTIME_PYTHON" --version 2>&1))"
 
-# Step 10b: ledger directory + runtime venv (idempotent)
+# Step 11b: ledger directory + runtime venv (idempotent)
 umask 077
 mkdir -p "$HOME/.briefings"
 chmod 700 "$HOME/.briefings"
@@ -351,7 +351,7 @@ else
     ok "Runtime venv exists at $VENV_DIR."
 fi
 
-# Step 10c: install briefings_mcp editable so git pull propagates changes
+# Step 11c: install briefings_mcp editable so git pull propagates changes
 info "Installing briefings_mcp package (editable from $SCRIPT_DIR)..."
 "$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || warn "pip upgrade failed; continuing."
 if ! "$VENV_PY" -m pip install --quiet --editable "$SCRIPT_DIR"; then
@@ -361,7 +361,7 @@ fi
     || fail "briefings_mcp or fastmcp not importable from $VENV_PY after install."
 ok "briefings_mcp installed (editable). fastmcp resolved."
 
-# Step 10d: initialise the ledger file (never truncate — preserves prior decisions)
+# Step 11d: initialise the ledger file (never truncate — preserves prior decisions)
 if [ ! -f "$HOME/.briefings/decisions.jsonl" ]; then
     touch "$HOME/.briefings/decisions.jsonl"
     chmod 600 "$HOME/.briefings/decisions.jsonl"
@@ -371,7 +371,7 @@ else
     ok "Ledger file already exists; preserved untouched."
 fi
 
-# Step 10e: append LOOKBACK_DAYS=60 to ~/.briefings_config (idempotent;
+# Step 11e: append LOOKBACK_DAYS=60 to ~/.briefings_config (idempotent;
 # double-append would not break anything but would clutter the config)
 if ! grep -q '^LOOKBACK_DAYS=' "$HOME/.briefings_config" 2>/dev/null; then
     umask 077
@@ -381,7 +381,7 @@ else
     ok "LOOKBACK_DAYS already configured in ~/.briefings_config."
 fi
 
-# Step 10f: register MCP server (idempotent — `claude mcp add` would re-add,
+# Step 11f: register MCP server (idempotent — `claude mcp add` would re-add,
 # so skip if already registered)
 if "$CLAUDE" mcp list 2>/dev/null | grep -qE '^briefings:'; then
     ok "MCP server 'briefings' already registered."
@@ -427,7 +427,7 @@ if [ -n "$PRE_LATEST" ] && [ -f "$PRE_LATEST" ]; then
         || stat -c '%Y' "$PRE_LATEST" 2>/dev/null || echo 0)
 fi
 
-"$CLAUDE" -p --dangerously-skip-permissions "Run /briefing all" 2>&1 | tail -10
+"$CLAUDE" -p "Run /briefing all" 2>&1 | tail -10
 echo ""
 
 # Soft SITREP-shape assertion — best-effort, never fails the install. If no

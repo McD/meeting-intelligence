@@ -344,7 +344,7 @@ if [ "$WITH_BRIEFING" -eq 1 ]; then
         info "Running /briefing (this can take 1–3 minutes)..."
         # Force regenerate so the assertion exercises the CURRENT briefing
         # rendering rather than a possibly-stale on-disk file.
-        claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        claude_out=$("$CLAUDE_BIN" -p \
             "/briefing — force regenerate the next upcoming meeting's briefing, replacing the existing file if one exists. We need to validate the SITREP shape." \
             < /dev/null 2>&1) || true
 
@@ -444,7 +444,7 @@ if [ "$WITH_FOLLOWUP" -eq 1 ]; then
 
                 info "Force-regenerating /follow-up for: $meeting_title"
                 info "  (this can take 1–3 minutes)"
-                claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+                claude_out=$("$CLAUDE_BIN" -p \
                     "/follow-up $meeting_title --force" \
                     < /dev/null 2>&1) || true
 
@@ -529,7 +529,7 @@ if [ "$WITH_DIGEST" -eq 1 ]; then
 
         info "Force-generating /digest for $TODAY..."
         info "  (this can take 1–3 minutes)"
-        claude_out=$("$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        claude_out=$("$CLAUDE_BIN" -p \
             "/digest" \
             < /dev/null 2>&1) || true
 

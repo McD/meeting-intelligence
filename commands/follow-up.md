@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Mark McDermott <mark@screencloud.io>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -118,7 +118,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
    **Bot-vs-user disambiguation — primary signal is `bot_sent_ids`.** Read the state file's `bot_sent_ids` array (a list of Gmail message-ids the bot has previously sent on this thread). If the last message's ID is in that array, the message is one of the bot's own past sends — set watermark per Step 5b with `last_processed_msg: <last_message_id>` and SKIP. No further parsing, no clarification reply.
 
-   This replaces the prior From-header display-name heuristic, which became unreliable when `gws gmail +send` started returning `From: Mark McDermott <mark@screencloud.io>` (with display name) for some sends. The ground-truth identifier is the message-id; bot_sent_ids holds the canonical list.
+   This replaces the prior From-header display-name heuristic, which became unreliable when `gws gmail +send` started returning `From: Display Name <user@example.com>` (with display name) for some sends. The ground-truth identifier is the message-id; bot_sent_ids holds the canonical list.
 
    **Legacy state-file fallback.** If `bot_sent_ids` is missing or unparseable (state files written before this field was introduced), fall back to the display-name heuristic: From with no display-name text → bot's own send → SKIP. The fallback is best-effort and may misclassify when gws starts including display names; the lasting fix is to migrate the state file to populate `bot_sent_ids` on the next bot send (Step 5b appends on every successful send). State files created fresh always include `bot_sent_ids: []` at minimum.
 
@@ -268,13 +268,13 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    If `FROM_OK=1`, continue to the bot-vs-user check below.
 
-   **Bot-vs-user disambiguation** (address matches `$MY_EMAIL` — distinguish user reply from bot ack):
-   - Bot-sent: `From: you@example.com` or `From: <you@example.com>` — no display name.
-   - User reply: `From: Your Name <you@example.com>` — display name text precedes the angle brackets.
+   **Bot-vs-user disambiguation — primary signal is `bot_sent_ids`.** Read the state file's `bot_sent_ids` array. If the last message's ID is in that array, it is one of the bot's own prior sends — set watermark per Step 6 with `last_processed_msg: <last_message_id>` and SKIP. No further parsing.
 
-   If From has no display-name text → bot's own prior ack. Set watermark per Step 6 with `last_processed_msg: <last_message_id>` and SKIP. Do not act.
+   This replaces the prior From-header display-name heuristic, which became unreliable when `gws gmail +send` started returning `From: Display Name <user@example.com>` (with display name) for some sends.
 
-   If From has display-name text → continue to Step 5 with this as the user reply.
+   **Legacy state-file fallback.** If `bot_sent_ids` is missing or unparseable (state files written before this field was introduced), fall back to the display-name heuristic: From with no display-name text → bot's own send → SKIP. The fallback is best-effort; the lasting fix is `bot_sent_ids`, which digest.md Step 6 seeds for every new awaiting-digest file.
+
+   If neither check triggers a skip → continue to Step 5 with this as the user reply.
 
    **Audit trail for skipped intermediate replies.** Same shape as the awaiting-reply branch: if the prior `last_processed_msg` was non-empty and earlier messages in the array also pass the From/display-name checks (user replies superseded before processing), log each one as `"WARN: Awaiting-digest skipped intermediate user reply <message_id> — processing only the latest"`.
 
@@ -559,10 +559,10 @@ Extract:
     1. **Concrete doer** — a specific person will perform it. Vague "we should…" or "someone needs to…" fails this gate.
     2. **Done-state exists** — there is a moment after which a reasonable person says "yes, that's done." If you cannot describe what "done" looks like in one phrase, it isn't an action item.
     3. **Has a deliverable, decision, or interaction** — an artifact (memo, draft, sample, intro, meeting booked), a binary decision made, or a specific conversation that needs to happen. Mental postures, principles, stances, framings, and "how I'll show up" are **not** deliverables. Examples that fail this gate: "stick to X message in board comms", "position as Y's ally", "keep my Board and Advisor roles separated". They are decisions about future behavior, not actions.
-       **Stance-laundering guard.** If the deliverable's subject matter is itself a stance, posture, framing, or "how I'll show up" commitment (e.g. "draft my positioning on X", "write up how I'll handle Y", "memo on my stance toward Z"), the wrapper is still a stance and is excluded. Operational test: a real deliverable produces information someone else can use; a stance-wrapped deliverable produces information only the user references. A one-pager going TO Cédric is real (he reads it); a one-pager FROM the user to themselves articulating their own posture is laundering.
-    4. **Worth chasing for the user** — for an *Owed-to-you* item specifically, the user must be the beneficiary or be actively blocked by it. Pure FYI ("Aidan to install a skill", "Jonny to coordinate internal logistics") fails this gate even though it has a doer and a done-state — the user is incidentally present, not actually waiting. When in doubt, ask: would the user ever chase this person about this? If no, drop it.
-  - **Owner is the doer, not the mentioned.** Attribute each action to the person who will actually perform it, not whoever's name appears in the action text. Example: "find a way to bring Jane's product insight back in after her exit" — if the doer is the remaining team, attribute to them; do NOT attribute to Jane just because her name is in the body. When the user's name appears in an action they are not performing, the user is the *subject*, not the *owner*.
-  - **Self-coaching meetings need extra care.** Coaching, therapy, 1:1 self-reflection, debriefs with mentors, and meetings whose explicit purpose is the user's own development tend to produce many sentences that *sound like* commitments ("I'll position myself as…", "I'll stop doing X") but are almost always stances rather than actions. Default to **capturing nothing as commitments** from these meetings unless an item passes all four gates above with an obvious deliverable (e.g. "send Carl an updated memo by Friday" inside a coaching session is a real action; "be more direct with Carl" is not).
+       **Stance-laundering guard.** If the deliverable's subject matter is itself a stance, posture, framing, or "how I'll show up" commitment (e.g. "draft my positioning on X", "write up how I'll handle Y", "memo on my stance toward Z"), the wrapper is still a stance and is excluded. Operational test: a real deliverable produces information someone else can use; a stance-wrapped deliverable produces information only the user references. A one-pager going TO Alex is real (they read it); a one-pager FROM the user to themselves articulating their own posture is laundering.
+    4. **Worth chasing for the user** — for an *Owed-to-you* item specifically, the user must be the beneficiary or be actively blocked by it. Pure FYI ("Sam to install a skill", "Jordan to coordinate internal logistics") fails this gate even though it has a doer and a done-state — the user is incidentally present, not actually waiting. When in doubt, ask: would the user ever chase this person about this? If no, drop it.
+  - **Owner is the doer, not the mentioned.** Attribute each action to the person who will actually perform it, not whoever's name appears in the action text. Example: "find a way to bring Morgan's product insight back in after her exit" — if the doer is the remaining team, attribute to them; do NOT attribute to Morgan just because her name is in the body. When the user's name appears in an action they are not performing, the user is the *subject*, not the *owner*.
+  - **Self-coaching meetings need extra care.** Coaching, therapy, 1:1 self-reflection, debriefs with mentors, and meetings whose explicit purpose is the user's own development tend to produce many sentences that *sound like* commitments ("I'll position myself as…", "I'll stop doing X") but are almost always stances rather than actions. Default to **capturing nothing as commitments** from these meetings unless an item passes all four gates above with an obvious deliverable (e.g. "send Chris an updated memo by Friday" inside a coaching session is a real action; "be more direct with Chris" is not).
   - **Confidence callouts** — when the transcript leaves the owner or scope genuinely ambiguous, mark the uncertainty inline. Use sparingly; do not hedge clean actions.
     - **Unclear owner** — append `?` to the person's name: `**You?**`, `**Alice?**`, `**Organiser?**`. Trigger this only when the transcript does not assign a clear owner (e.g. "someone should send the recap").
     - **Unclear scope** — append italic `*(scope?)*` at the end of the action text. Trigger when the action is vague enough that the person would not know what "done" looks like (e.g. "Owner to do something about the website" → `**You** — handle the website *(scope?)*`).
@@ -774,8 +774,8 @@ Send via both channels. Email is sent first because its `threadId` is needed for
 Convert markdown to HTML using this exact Python snippet (save the follow-up file first, then run):
 
 ```bash
-HTML=$(python3 << 'PYEOF'
-import re
+HTML=$(FOLLOWUP_FILE="$FOLLOWUP_FILE" python3 << 'PYEOF'
+import os, re
 
 def inline(text):
     # Bold first so that *italic* doesn't eat into ** delimiters.
@@ -790,7 +790,7 @@ def close_lists(out, state):
     if state['ul']: out.append('</ul>'); state['ul'] = False
     if state['ol']: out.append('</ol>'); state['ol'] = False
 
-lines = open('FOLLOWUP_FILE').read().split('\n')
+lines = open(os.environ['FOLLOWUP_FILE']).read().split('\n')
 out = []
 state = {'ul': False, 'ol': False}
 
@@ -829,16 +829,16 @@ SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting 
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 ```
 
-Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. `$THREAD_ID` is used in the awaiting-reply step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
+`FOLLOWUP_FILE` must be set to the path of the follow-up `.md` file saved in Step 5. `$THREAD_ID` is used in the awaiting-reply step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
 
 **Slack** — if `~/.slack_webhook` exists, convert to mrkdwn and POST:
 
 ```bash
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 if [ -n "$SLACK_WEBHOOK" ]; then
-python3 -c "
-import sys, re
-text = open('FOLLOWUP_FILE').read()
+FOLLOWUP_FILE="$FOLLOWUP_FILE" python3 -c "
+import os, sys, re
+text = open(os.environ['FOLLOWUP_FILE']).read()
 text = re.sub(r'^### (.+)$', r'*\1*', text, flags=re.MULTILINE)
 text = re.sub(r'^## (.+)$', r'\n*\1*', text, flags=re.MULTILINE)
 text = re.sub(r'^# (.+)$', r'*\1*', text, flags=re.MULTILINE)
@@ -855,7 +855,7 @@ print(payload)
 fi
 ```
 
-Replace `FOLLOWUP_FILE` with the actual path to the saved follow-up `.md` file. If `~/.slack_webhook` is not found, skip silently.
+`FOLLOWUP_FILE` must be set to the path of the follow-up `.md` file saved in Step 5. If `~/.slack_webhook` is not found, skip silently.
 
 **Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `research:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write. Capture BOTH the thread-id and the follow-up email's own message-id from the `gws gmail +send` response — the message-id seeds `bot_sent_ids` so Step 0's dispatcher knows the initial follow-up email is one of the bot's own sends (not a user reply to mis-parse):
 

@@ -29,7 +29,7 @@ The installer sets up Homebrew, Node.js, [Claude Code](https://claude.com/claude
 ## Install
 
 ```bash
-git clone https://github.com/McD/meeting-intelligence.git
+git clone https://github.com/YOUR_USERNAME/meeting-intelligence.git
 cd meeting-intelligence
 bash install.sh
 ```
@@ -323,7 +323,7 @@ Topic tags come from `/follow-up`'s Step 4 (Claude infers 1-3 tags per commitmen
 
 ### Ledger dedup
 
-`/follow-up --force` re-extractions used to accumulate near-identical commitment entries in the ledger (3+ copies of the same Robert action surfaced during Phase 3 testing). Phase 4 fixed this at two layers:
+`/follow-up --force` re-extractions used to accumulate near-identical commitment entries in the ledger (3+ copies of the same action item surfaced during Phase 3 testing). Phase 4 fixed this at two layers:
 
 - **Dedup-on-write** in `briefings_mcp.ledger.append`: when a new commitment is appended, the last 50 entries are scanned for the same `source_meeting` with an exact or 60-character-prefix match on `summary`. If a match exists, the write is a silent no-op.
 - **One-time cleanup script** at `scripts/dedup_ledger.py`: scans the entire ledger for duplicate commitment clusters within the same source_meeting and reports them. Dry-run by default. Run with `--apply` to actually rewrite the ledger (atomically, via tmp file + os.replace).
