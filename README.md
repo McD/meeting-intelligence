@@ -1,10 +1,12 @@
 # meeting-intelligence
 
-Automated pre-meeting briefings and post-meeting follow-ups, powered by Claude Code and your Google Workspace and Slack accounts.
+You walk into every meeting already knowing where things stand. Not from memory — from a briefing that landed in your inbox two hours earlier, built from the actual email threads, Slack conversations, Drive documents, and prior call transcripts relevant to that meeting and those people.
 
-Every 15 minutes a background scheduler checks your calendar. About two hours before a meeting, it generates a briefing and delivers it to your inbox and a private Slack channel. Within 75 minutes of a meeting ending, it finds the Gemini, Teams, or MacWhisper transcript, extracts actions and decisions, and sends a follow-up. If no transcript is found, it emails you a request that you can reply to with the transcript, "cancel", or "extend".
+For each attendee, Claude reads your recent Gmail threads, the Drive docs they've touched, prior call transcripts, and Slack messages where their name has come up. For internal meetings, Slack is the primary signal: what has this person been saying in shared channels, what's the ongoing work between the two of you, what's currently live around the meeting topic.
 
-The thing that makes the briefings actually useful is the cross-source context. For each attendee, Claude reads your recent Gmail threads, prior call transcripts, Drive docs they've touched, and Slack messages where their name has come up. For internal meetings, Slack is the primary signal: what has this person been saying in shared channels, what's the ongoing work between the two of you, what's currently live around the meeting topic. By the time the briefing lands in your inbox, you walk in already knowing where things stand.
+After the meeting, it finds the transcript, extracts actions and decisions, and sends a follow-up. Commitments land in a running ledger. Twice a week you get a digest of everything open, with reply keywords to mark things done, reassign them, or drop them.
+
+The rest is scaffolding: a background scheduler that checks your calendar every 15 minutes and runs Claude when there's something to do. It runs unattended.
 
 ## What you get
 
