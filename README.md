@@ -46,7 +46,7 @@ bash install.sh
 
 The installer asks for two things: the email address briefings should be sent to, and your company's email domain (used to classify meetings as internal vs external). Both are saved to `~/.briefings_config`. The slash commands read this config at runtime, so updating either value is just a matter of editing the file (no re-install needed).
 
-**During and after install you'll see macOS permission prompts** — from Terminal first, then from `gtimeout`, then from Claude Code itself once the scheduler starts running. Click Allow on every one. See [macOS permission setup](#macos-permission-setup) below for the full story; for now, Allow is always the right answer.
+**During and after install you'll see macOS permission prompts** — from Terminal first, then from Claude Code itself once the scheduler starts running. Click Allow on every one. See [macOS permission setup](#macos-permission-setup) below for the full story; for now, Allow is always the right answer.
 
 ### Plugin format
 
@@ -64,7 +64,7 @@ bash scripts/verify-v1.sh
 
 13 automated assertions cover file layout, the runtime Python venv, MCP server registration, the decision ledger, the reply-dedup classifier, and the smoke-test harnesses. Each one prints PASS or FAIL. If everything passes, the install is good.
 
-Optional flags exercise the real Claude-call paths (each costs a few API spend and a couple of minutes):
+Optional flags exercise the real Claude-call paths (each takes a couple of minutes and costs a small amount of Claude usage):
 
 - `--with-briefing` — force-regenerate the next upcoming meeting's briefing and assert SITREP shape (verdict from the closed set, plus `Trap:` / `Delta:` / `Comment:`, and `Counterparty:` for external/mixed)
 - `--with-followup` — force-regenerate the latest follow-up and assert Phase 1 shape
@@ -368,13 +368,13 @@ Reply to the digest email to update commitment state. The scheduler picks up rep
 - `more: 2` — keep Yours item 2 open, snooze to next digest (no state change, just logged)
 - `drop: 4` — mark Yours item 4 as `state: "dropped"`
 - `not-mine: 5` — disown Yours item 5; sets `owner` to `"unassigned"` and the item disappears from both sections of future digests (useful when extraction over-attributed an action to you)
-- `not-mine: 5 → Cédric` — same as `not-mine: 5` but reassigns ownership to a named person; the item reappears in **Owed to you** on the next cycle
+- `not-mine: 5 → Alex` — same as `not-mine: 5` but reassigns ownership to a named person; the item reappears in **Owed to you** on the next cycle
 - `drop-owed: 2` — mark Owed-to-you item 2 as `state: "dropped"` (useful for FYI items captured as commitments that aren't actually owed to you)
 - `send: 2` — fire Nudge draft 2 to its recipient via Gmail
 - `cancel` — drop the awaiting-digest thread (state file deleted, no further polling)
 - `extend` — reset the 30-day expiry clock on the awaiting-digest state file
 
-Each section is capped at 15 items per digest, newest first; the older overflow is kept in the ledger and counted in an italic "…and N more older items hidden" line. The cap shrinks naturally as you reply `done:` / `done-owed:` / `drop:` / `not-mine:` / `drop-owed:` and older items become visible.
+Each section is capped at 15 items per digest, oldest first (so reply keyword positions stay stable across digests — `done: 3` always refers to the same item as long as nothing above it has been resolved); the newer overflow is kept in the ledger and counted in an italic "…and N more older items hidden" line. The cap shrinks naturally as you reply `done:` / `done-owed:` / `drop:` / `not-mine:` / `drop-owed:` and older items become visible.
 
 Items may carry up to two best-effort annotations from Step 2's cross-source enrichment: `*done?*` when Gmail or Slack suggests the relevant person has already done the thing (works for both sections — your sent messages for Yours, the owner's Slack messages for Owed), and an indented italic `*Next: <event name> on <DD Mon>*` line when one of the item's attendees is on your calendar in the next 14 days. The `*done?*` mark is a hint, not a claim; use `done:` / `done-owed:` to confirm.
 
