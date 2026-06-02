@@ -11,8 +11,10 @@ The thing that makes the briefings actually useful is the cross-source context. 
 - `/briefing`, `/follow-up`, and `/digest` slash commands inside Claude Code
 - A `scheduler.sh` that runs every 15 minutes via launchd and decides whether there's any work to do before invoking Claude (skips about 90% of cycles)
 - Twice-weekly actions tracker digest (Mon and Thu at 10am local) of your open commitments with reply-keyword updates
+- Weekly Slack health summary every Monday: cycle counts, Claude invocations, successes, and failure breakdown (timeout / auth / permission)
 - Multi-source context: Gmail, Drive, Slack, prior call transcripts
 - Email and Slack delivery
+- Prompt injection defense: all three command files treat externally-fetched content (email, calendar, Slack) as untrusted user data, never as instructions
 - Idempotent installer that's safe to re-run
 
 ## Prerequisites
@@ -79,7 +81,7 @@ bash update.sh
 
 ## macOS permission setup
 
-**TL;DR.** macOS will prompt for permissions as the scheduler runs. **Click Allow on every dialog you see from Claude Code, `gtimeout`, or a bare version number like `2.1.133`.** These are real and necessary. Expect 3-6 prompts in the first hour after install, then quiet for ~30 days until macOS Sequoia's renewable-consent cycle re-prompts. There is no way to suppress these entirely — only manage them.
+**TL;DR.** macOS will prompt for permissions as the scheduler runs. **Click Allow on every dialog you see from Claude Code or a bare version number like `2.1.133`.** These are real and necessary. Expect 3-6 prompts in the first hour after install. When Claude Code auto-updates, the scheduler detects the version bump and automatically runs `claude-tcc-unstick` to fix any stuck TCC rows before the next briefing cycle — in most cases you will see at most one prompt per upgrade and it will stick. If it keeps re-prompting, see [the stuck-row fix](#if-tcc-prompts-keep-re-firing) below.
 
 The rest of this section is detail for when something doesn't behave the way that TL;DR predicts.
 
@@ -97,10 +99,25 @@ Restart the terminal app after granting.
 
 Terminal's grants do not reach the scheduler. launchd-spawned processes don't inherit TCC from Terminal — their TCC parent is launchd itself. So the first time the scheduler runs after a Claude Code update, macOS will show a permission dialog (typically "`<version>` would like to access data from other apps"). Click Allow. If you miss the prompt the scheduler will fail silently until you do — see `scheduler.log` for `ERROR: …` lines and the Slack heads-up the scheduler posts on Claude Code version change.
 
-If the same prompt re-appears for the same Claude Code version (you've clicked Allow but it keeps re-prompting on each 15-minute cycle), the TCC grant didn't stick — a known macOS quirk for launchd-spawned binaries. Two workarounds:
+#### If TCC prompts keep re-firing
 
-- Open System Settings → Privacy & Security → App Management and confirm the entry is toggled on. Remove any stale duplicate entries from older Claude versions.
-- If it still re-prompts, add `/bin/bash` to App Management (broad but reliable — bash is the launchd entry point for the scheduler).
+macOS Sequoia writes `auth_value=5` (re-prompt-always) instead of `auth_value=2` (allowed) when you click Allow on a TCC prompt for an adhoc-signed CLI binary like Claude Code's per-version executable. The `claude-tcc-unstick` helper remediates this by directly updating the row to `auth_value=2`.
+
+The scheduler runs `claude-tcc-unstick` automatically on every Claude Code version bump. A daily launchd job (`com.<user>.tcc-unstick`, installed by `install.sh`) also runs it at 06:00 each morning to catch any rows that slip through.
+
+To run it manually:
+
+```bash
+~/.local/bin/claude-tcc-unstick           # fix stuck rows now
+~/.local/bin/claude-tcc-unstick --dry-run # preview what would change
+~/.local/bin/claude-tcc-unstick --check   # exit 1 if any stuck rows exist
+```
+
+If prompts still re-fire after a manual run, force tccd to reload its cache:
+
+```bash
+sudo killall tccd
+```
 
 ### macOS Sequoia monthly re-auth
 
@@ -198,6 +215,7 @@ meeting-intelligence/
 │   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
 │   ├── dedup_ledger.py     # One-time ledger cleanup (Phase 4; dry-run by default)
 │   ├── verify-v1.sh        # End-to-end smoke test (13 assertions; --with-* flags exercise real Claude calls)
+│   ├── smoke_test_improvements.sh # Checks injection defense, TCC cleanup wiring, health summary
 │   ├── smoke_test_u3p3.py  # Commitment-state mutator
 │   ├── smoke_test_u4.py    # Ledger query module
 │   ├── smoke_test_u4p4.py  # find_patterns + ledger dedup
@@ -388,7 +406,7 @@ Common issues:
 - **No briefings arriving**: confirm `launchctl list | grep briefings` shows the job, then check the log. If the log says "auth check failed", run `gws auth login`.
 - **gws auth keeps expiring**: gws uses bundled OAuth credentials. If your Workspace admin restricts third-party OAuth apps, you may need a custom client (out of scope here).
 - **"command not found: /briefing"**: close and reopen Claude Code so it picks up the newly-installed slash command.
-- **Briefings stopped after a Claude Code update**: Claude Code occasionally re-prompts for permissions after major updates, which the headless scheduler cannot answer. The scheduler detects version changes and posts a heads-up to Slack when this happens. If the log shows "Claude Code is asking for permission approval", open a terminal, run `claude` once, accept any prompts (in particular re-enabling `--dangerously-skip-permissions` if it asks), then briefings resume on the next 15-minute cycle. To stop this from happening in the first place, follow the macOS permission setup section above.
+- **Briefings stopped after a Claude Code update**: the scheduler detects version changes, automatically runs `claude-tcc-unstick` to fix any stuck TCC rows, and posts a Slack heads-up. If briefings still fail, check the log for `ERROR:` lines. If the log shows "Claude Code is asking for permission approval", open a terminal, run `claude` once, accept any prompts, then briefings resume on the next cycle. See [If TCC prompts keep re-firing](#if-tcc-prompts-keep-re-firing) for the full fix.
 
 ## License
 
