@@ -396,7 +396,7 @@ as the pre-flight gate parser already in this file."
 - [ ] **Step 1: Run update.sh to sync all changes to installed copies**
 
 ```bash
-cd /Users/markmcdermott/Sites/meeting-intelligence && bash update.sh
+bash update.sh
 ```
 
 Expected: update.sh copies `commands/*.md` to `~/.claude/commands/` and `scripts/scheduler.sh` to its installed location. Verify no errors.
@@ -412,13 +412,13 @@ Expected: `3` (one match per file).
 - [ ] **Step 3: Verify installed scheduler has TCC unstick and health summary**
 
 ```bash
-grep -c "claude-tcc-unstick\|generate_health_summary" ~/Library/LaunchAgents/../../../.local/bin/../.. /Users/markmcdermott/Sites/meeting-intelligence/scripts/scheduler.sh
+grep -c "claude-tcc-unstick\|generate_health_summary" scripts/scheduler.sh
 ```
 
 Actually just check the repo file since update.sh only copies commands/ and scheduler.sh into place at install time (the scheduler runs from the launchd plist which references `scripts/scheduler.sh` in the repo via `SCRIPT_DIR`):
 
 ```bash
-grep "claude-tcc-unstick\|generate_health_summary" /Users/markmcdermott/Sites/meeting-intelligence/scripts/scheduler.sh | wc -l
+grep "claude-tcc-unstick\|generate_health_summary" scripts/scheduler.sh | wc -l
 ```
 
 Expected: at least 4 lines (function definition lines + call sites).
