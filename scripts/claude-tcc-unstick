@@ -1,29 +1,32 @@
 #!/bin/bash
-# claude-tcc-unstick — clear macOS Sequoia auth_value=5 stuck-state TCC rows.
+# claude-tcc-unstick — remediate macOS Sequoia auth_value=5 TCC rows for
+# adhoc-signed binaries.
 #
-# Sequoia's kTCCServiceSystemPolicyAppData consent storage writes auth_value=5
-# (a "needs re-verification" placeholder) instead of auth_value=2 (allowed)
-# when persisting consent for adhoc-signed CLI binaries — including Claude
-# Code's per-version binary at ~/.local/share/claude/versions/X/. Without
-# remediation, EVERY access by the affected binary re-prompts the user.
+# Background: Sequoia writes auth_value=5 (pending re-auth / unresolved) when
+# the user clicks Allow on a TCC prompt for an adhoc-signed CLI binary —
+# Claude Code's per-version executable at ~/.local/share/claude/versions/X/,
+# Homebrew's gtimeout, etc. auth_value=5 causes tccd to re-prompt on every
+# access. The correct working value is auth_value=2 (allowed). The CSREQ
+# blob in the row is valid (the user did consent and macOS recorded the
+# binary identity); only the auth_value field is wrong.
 #
-# This script:
-#   1. Detects auth_value=5 rows for the known active binaries (Claude Code
-#      versions in ~/.local/share/claude/versions/, plus a few legacy paths
-#      we don't run today but may again).
-#   2. Deletes them from TCC.db via sqlite3 (no sudo — user owns the file
-#      with Full Disk Access).
-#   3. Reports what it cleared, and logs to ~/Briefings/scheduler.log so the
-#      action is auditable alongside the rest of the meeting-intelligence
-#      scheduler's activity.
+# Strategy (revised 2026-06-02 after the 2.1.150 evidence):
+#   - For stuck rows whose client path STILL EXISTS on disk: UPDATE
+#     auth_value 5→2, preserving CSREQ. This is the actual fix — tccd
+#     reads =2 and stops prompting. No re-prompt loop.
+#   - For stuck rows whose client path is MISSING (pruned old versions,
+#     uninstalled brew binaries): DELETE the row as orphan cleanup. There
+#     is no binary left to grant.
 #
-# tccd watches TCC.db for changes and reloads its cache; killing tccd is not
-# strictly required, but if rows seem stuck after a clear, run:
-#   sudo killall tccd
+# Prior versions of this script DELETEd everything. That caused a re-prompt
+# loop on the current binary because the next Allow re-wrote auth_value=5.
+#
+# tccd watches TCC.db and reloads its cache; killall is not normally needed
+# but `sudo killall tccd` forces a fresh load if a row seems sticky.
 #
 # Invocation:
-#   claude-tcc-unstick           — clear stuck rows, exit 0
-#   claude-tcc-unstick --dry-run — report what would be cleared, exit 0
+#   claude-tcc-unstick           — apply fixes, exit 0
+#   claude-tcc-unstick --dry-run — report what would change, exit 0
 #   claude-tcc-unstick --check   — exit 1 if any stuck rows exist (for scripts)
 
 set -e
@@ -32,9 +35,8 @@ DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
 LOG="$HOME/Briefings/scheduler.log"
 SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null || true)
 
-# Patterns: adhoc-signed CLI binaries known to trip the auth_value=5 bug.
-# Anchored to the path prefix so we don't accidentally touch other Homebrew
-# binaries the user may have intentionally granted permissions to.
+# Adhoc-signed CLI binary paths known to trip the Sequoia auth_value=5 bug.
+# Anchored to path prefixes so unrelated Homebrew grants are never touched.
 PATTERNS=(
     "/Users/$USER/.local/share/claude/versions/%"
     "/opt/homebrew/Cellar/coreutils/%/bin/gtimeout"
@@ -67,8 +69,8 @@ for p in "${PATTERNS[@]}"; do
 done
 where_clause+=")"
 
-# Detect stuck rows first
-stuck=$(sqlite3 "$DB" "SELECT service || '|' || client FROM access WHERE $where_clause;" 2>&1)
+# Pull stuck rows. Output: service<TAB>client per line.
+stuck=$(sqlite3 -separator $'\t' "$DB" "SELECT service, client FROM access WHERE $where_clause;" 2>&1)
 
 if [ -z "$stuck" ]; then
     if [ "$mode" = "check" ]; then
@@ -78,30 +80,71 @@ if [ -z "$stuck" ]; then
     exit 0
 fi
 
-# Count + report
-count=$(printf '%s\n' "$stuck" | grep -c '^')
+# Partition into "live" (path exists → UPDATE) and "orphan" (missing → DELETE)
+live_rows=""
+orphan_rows=""
+while IFS=$'\t' read -r service client; do
+    [ -z "$service" ] && continue
+    if [ -e "$client" ]; then
+        live_rows+="${service}|${client}"$'\n'
+    else
+        orphan_rows+="${service}|${client}"$'\n'
+    fi
+done <<< "$stuck"
+
+live_count=0
+orphan_count=0
+[ -n "$live_rows" ]   && live_count=$(printf '%s' "$live_rows"   | grep -c '^')
+[ -n "$orphan_rows" ] && orphan_count=$(printf '%s' "$orphan_rows" | grep -c '^')
+total=$((live_count + orphan_count))
 
 if [ "$mode" = "check" ]; then
-    echo "$count stuck row(s) detected:"
-    printf '%s\n' "$stuck" | sed 's/^/  /'
+    echo "$total stuck row(s) detected: $live_count live (will UPDATE), $orphan_count orphan (will DELETE):"
+    [ -n "$live_rows" ]   && printf '%s' "$live_rows"   | sed 's/^/  live    /'
+    [ -n "$orphan_rows" ] && printf '%s' "$orphan_rows" | sed 's/^/  orphan  /'
     exit 1
 fi
 
 if [ "$mode" = "dry" ]; then
-    log "dry-run: would clear $count stuck row(s):"
-    printf '%s\n' "$stuck" | sed 's/^/  /'
+    log "dry-run: would fix $total row(s) ($live_count UPDATE, $orphan_count DELETE):"
+    [ -n "$live_rows" ]   && printf '%s' "$live_rows"   | sed 's/^/  live    /'
+    [ -n "$orphan_rows" ] && printf '%s' "$orphan_rows" | sed 's/^/  orphan  /'
     exit 0
 fi
 
-# Apply: delete the rows
-sqlite3 "$DB" "DELETE FROM access WHERE $where_clause;"
+# Apply.
+#
+# Live rows: UPDATE auth_value=2 while keeping CSREQ + auth_reason intact.
+# Scope the UPDATE to the exact (service, client) pairs we identified so we
+# don't promote any row outside our matched set even if the patterns ever
+# widen unintentionally.
+if [ -n "$live_rows" ]; then
+    while IFS='|' read -r service client; do
+        [ -z "$service" ] && continue
+        # Single-quote escape for SQL
+        s_esc=$(printf '%s' "$service" | sed "s/'/''/g")
+        c_esc=$(printf '%s' "$client"  | sed "s/'/''/g")
+        sqlite3 "$DB" "UPDATE access SET auth_value=2 WHERE auth_value=5 AND service='$s_esc' AND client='$c_esc';"
+    done <<< "$live_rows"
+fi
 
-log "cleared $count stuck TCC row(s)"
-printf '%s\n' "$stuck" | sed 's/^/  /' | tee -a "$LOG" >/dev/null
+# Orphan rows: DELETE the dead grants outright.
+if [ -n "$orphan_rows" ]; then
+    while IFS='|' read -r service client; do
+        [ -z "$service" ] && continue
+        s_esc=$(printf '%s' "$service" | sed "s/'/''/g")
+        c_esc=$(printf '%s' "$client"  | sed "s/'/''/g")
+        sqlite3 "$DB" "DELETE FROM access WHERE auth_value=5 AND service='$s_esc' AND client='$c_esc';"
+    done <<< "$orphan_rows"
+fi
 
-# Slack heads-up so the user knows a prompt may fire shortly
-if [ -n "$SLACK_WEBHOOK" ]; then
-    payload=$(printf '{"text": ":wrench: TCC auto-cleanup cleared %s stuck row(s) for adhoc-signed binaries. Next macOS prompt that fires for one of these is the *fresh consent* path — clicking Allow should stick (writes auth_value=2). If prompts re-fire within minutes, run `sudo killall tccd` to force a tccd cache reload."}' "$count")
+log "fixed $total stuck TCC row(s): $live_count UPDATEd to allowed, $orphan_count orphan DELETEd"
+[ -n "$live_rows" ]   && printf '%s' "$live_rows"   | sed 's/^/  live    /' | tee -a "$LOG" >/dev/null
+[ -n "$orphan_rows" ] && printf '%s' "$orphan_rows" | sed 's/^/  orphan  /' | tee -a "$LOG" >/dev/null
+
+# Slack heads-up — only when something material changed
+if [ -n "$SLACK_WEBHOOK" ] && [ "$total" -gt 0 ]; then
+    payload=$(printf '{"text": ":wrench: TCC auto-fix: %s row(s) UPDATEd to allowed (live binary), %s orphan row(s) DELETEd. No re-prompt expected; if one fires, run `sudo killall tccd` to force a tccd cache reload."}' "$live_count" "$orphan_count")
     curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" \
          -H 'Content-type: application/json' -d "$payload" >/dev/null || true
 fi
