@@ -137,9 +137,23 @@ if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler
     mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
 fi
 
+if [ -f "$LOCK_FILE" ]; then
+    pid=$(cat "$LOCK_FILE")
+    lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
+    if [ "$lock_age" -lt 1800 ] && kill -0 "$pid" 2>/dev/null; then
+        log "Already running (PID $pid), skipping."
+        exit 0
+    fi
+fi
+echo $$ > "$LOCK_FILE"
+# Single quotes: $LOCK_FILE expands at trap-firing time, not trap-definition.
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 # Monday, once per day — keep ~/Briefings/ from growing unbounded and send the
 # weekly health summary to Slack. Sentinel file prevents multi-fire on every
 # cycle before 09:00 (the old `< 09:16` window ran up to 38 times per Monday).
+# Runs after lockfile acquisition to prevent two concurrent Monday cycles from
+# both mutating the ledger via auto-expiry.
 WEEKLY_SENTINEL="$BRIEFING_DIR/.last_weekly_summary"
 if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL" 2>/dev/null)" ]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
@@ -174,6 +188,10 @@ for entry in ledger.iter_entries():
 print(json.dumps(dropped))
 PYEOF
     )
+    EXPIRY_RC=$?
+    if [ "$EXPIRY_RC" -ne 0 ]; then
+        log "ERROR: auto-expiry Python block failed (rc=$EXPIRY_RC) — ledger not modified."
+    fi
     EXPIRED_COUNT=$(/usr/bin/python3 -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$EXPIRED_JSON" 2>/dev/null || echo 0)
     if [ "$EXPIRED_COUNT" -gt 0 ]; then
         log "Auto-expired $EXPIRED_COUNT stale commitments from ledger."
@@ -185,18 +203,6 @@ PYEOF
     generate_health_summary
     date +%Y-%m-%d > "$WEEKLY_SENTINEL"
 fi
-
-if [ -f "$LOCK_FILE" ]; then
-    pid=$(cat "$LOCK_FILE")
-    lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
-    if [ "$lock_age" -lt 1800 ] && kill -0 "$pid" 2>/dev/null; then
-        log "Already running (PID $pid), skipping."
-        exit 0
-    fi
-fi
-echo $$ > "$LOCK_FILE"
-# Single quotes: $LOCK_FILE expands at trap-firing time, not trap-definition.
-trap 'rm -f "$LOCK_FILE"' EXIT
 
 # Track Claude Code version changes so we can run TCC cleanup proactively on update.
 # Flagging the change up front gives the user context if briefings start failing.
@@ -402,8 +408,8 @@ run_claude() {
     fi
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
-        log "ERROR: $label timed out after ${CLAUDE_TIMEOUT_SECONDS}s (Claude killed)."
-        notify_slack ":hourglass: Briefings stalled — Claude Code did not return within ${CLAUDE_TIMEOUT_SECONDS}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
+        log "ERROR: $label timed out after ${t}s (Claude killed)."
+        notify_slack ":hourglass: Briefings stalled — Claude Code did not return within ${t}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
     elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
         log "ERROR: $label hit transient API errors on both attempts."
         notify_slack ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."

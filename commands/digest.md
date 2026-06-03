@@ -94,7 +94,7 @@ def active_tier(record):
     Everything else is hidden from this digest — kept in ledger for auto-expiry or future digests.
     """
     due = parse_due(record.get("due"))
-    if due and due < today:
+    if due and due <= today:
         return (0, due.isoformat())          # overdue: most overdue surfaces first
     if due and due <= today + timedelta(days=14):
         return (1, due.isoformat())          # due soon: earliest deadline first
