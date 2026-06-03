@@ -145,6 +145,43 @@ if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL"
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
     find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
     log "Cleaned up files older than 30 days."
+
+    # Auto-expire stale open commitments from the ledger.
+    # Rule: no-due-date items open >30 days, OR any item open >60 days.
+    # These are almost always done-and-forgotten or abandoned; keeping them
+    # floods the digest and erodes trust in what surfaces there.
+    EXPIRED_JSON=$(~/.briefings/venv/bin/python3 <<'PYEOF'
+import json
+from datetime import datetime, timezone
+from briefings_mcp import ledger
+
+now = datetime.now(timezone.utc)
+dropped = []
+for entry in ledger.iter_entries():
+    if entry.get("type") != "commitment" or entry.get("state") not in ("open", "in-flight"):
+        continue
+    created = entry.get("created_at", "")
+    try:
+        normalised = created.replace("Z", "+00:00") if created.endswith("Z") else created
+        age_days = (now - datetime.fromisoformat(normalised)).days
+    except Exception:
+        age_days = 0
+    due = entry.get("due")
+    if (not due and age_days > 30) or age_days > 60:
+        ledger.update_commitment_state(entry["id"], "dropped")
+        dropped.append(entry.get("summary", "")[:80])
+
+print(json.dumps(dropped))
+PYEOF
+    )
+    EXPIRED_COUNT=$(/usr/bin/python3 -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$EXPIRED_JSON" 2>/dev/null || echo 0)
+    if [ "$EXPIRED_COUNT" -gt 0 ]; then
+        log "Auto-expired $EXPIRED_COUNT stale commitments from ledger."
+        notify_slack ":broom: Auto-pruned $EXPIRED_COUNT stale commitments (no-due items open >30 days, or any item >60 days). Check \`~/.briefings/decisions.jsonl\` state=dropped if you need to recover one."
+    else
+        log "Auto-expiry: no stale commitments found."
+    fi
+
     generate_health_summary
     date +%Y-%m-%d > "$WEEKLY_SENTINEL"
 fi

@@ -74,10 +74,40 @@ if my_name:
         my_aliases.add(first)
 
 now = datetime.now(timezone.utc)
+today = now.date()
 
-SECTION_CAP = 15  # Per-section display cap. Older overflow is hidden but kept in ledger.
+from datetime import date as date_type, timedelta
 
-mine, owed = [], []
+SECTION_CAP = 7  # Per-section display cap. Items outside the active tiers are hidden but kept in ledger.
+
+def parse_due(due_str):
+    if not due_str:
+        return None
+    try:
+        return date_type.fromisoformat(due_str[:10])
+    except Exception:
+        return None
+
+def active_tier(record):
+    """Return (tier, sort_key) for items that make the digest, or None to hide.
+    Tier 0 = overdue (due date passed), 1 = due within 14 days, 2 = created in last 7 days.
+    Everything else is hidden from this digest — kept in ledger for auto-expiry or future digests.
+    """
+    due = parse_due(record.get("due"))
+    if due and due < today:
+        return (0, due.isoformat())          # overdue: most overdue surfaces first
+    if due and due <= today + timedelta(days=14):
+        return (1, due.isoformat())          # due soon: earliest deadline first
+    try:
+        normalised = record["created_at"].replace("Z", "+00:00") if record["created_at"].endswith("Z") else record["created_at"]
+        created_dt = datetime.fromisoformat(normalised)
+    except Exception:
+        created_dt = None
+    if created_dt and created_dt >= now - timedelta(days=7):
+        return (2, record["created_at"])     # fresh capture: oldest first within tier
+    return None                              # below active tier — excluded from digest
+
+mine_all, owed_all = [], []
 for entry in ledger.iter_entries():
     if entry.get("type") != "commitment":
         continue
@@ -90,7 +120,6 @@ for entry in ledger.iter_entries():
     if owner_lower in ("", "unassigned"):
         continue
     attendees = entry.get("attendees", []) or []
-    # parse created_at age in days
     created = entry.get("created_at", "")
     try:
         normalised = created.replace("Z", "+00:00") if created.endswith("Z") else created
@@ -108,26 +137,27 @@ for entry in ledger.iter_entries():
         "age_days": age_days,
     }
     if owner_lower in my_aliases:
-        mine.append(record)
+        mine_all.append(record)
     elif my_email in [a.lower() for a in attendees]:
-        owed.append(record)
+        owed_all.append(record)
 
-# Oldest first so positions stay stable across digests. When a new item is
-# captured, it appends to the bottom of its section rather than pushing every
-# other item down by one — which means the user's reply keywords (`done: 3`,
-# `not-mine: 5`) land on the same items they were referring to in the previous
-# digest, as long as no item above them has been done/dropped/disowned in
-# between. The bonus side-effect: overdue items naturally surface at the top,
-# which doubles as a priority signal.
-mine.sort(key=lambda r: r["created_at"])
-owed.sort(key=lambda r: r["created_at"])
+mine_total = len(mine_all)
+owed_total = len(owed_all)
 
-mine_total = len(mine)
-owed_total = len(owed)
-mine_shown = mine[:SECTION_CAP]
-owed_shown = owed[:SECTION_CAP]
-mine_hidden = mine_total - len(mine_shown)
-owed_hidden = owed_total - len(owed_shown)
+# Filter to active tiers only, then sort by (tier, sort_key).
+mine_active = sorted(
+    [(t, r) for r in mine_all for t in [active_tier(r)] if t is not None],
+    key=lambda x: x[0]
+)
+owed_active = sorted(
+    [(t, r) for r in owed_all for t in [active_tier(r)] if t is not None],
+    key=lambda x: x[0]
+)
+
+mine_shown = [r for _, r in mine_active[:SECTION_CAP]]
+owed_shown = [r for _, r in owed_active[:SECTION_CAP]]
+mine_hidden = max(0, len(mine_active) - len(mine_shown))
+owed_hidden = max(0, len(owed_active) - len(owed_shown))
 
 print(json.dumps({
     "mine": mine_shown,
@@ -141,7 +171,14 @@ PYEOF
 )
 ```
 
-Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section. Both arrays are pre-sorted **oldest-first** so existing positions stay stable across digests (reply keywords like `done: 3` land on the same item the user saw in the prior digest, as long as nothing above it has been done/dropped/disowned in between). Both are pre-capped to 15 items each — the cap drops the **newest** overflow, not the oldest, because the oldest items are the ones most worth pruning via reply keywords; surfacing those for action first is the priority signal. The hidden tail is counted in `mine_hidden` / `owed_hidden` and the renderer surfaces those counts. `mine_total` / `owed_total` carry the un-capped totals for the Slack heads-up.
+Parse `$LEDGER_OUT` as JSON. The `mine` array becomes the **Yours** section; the `owed` array becomes the **Owed to you** section.
+
+**Active-tier filter** — only three categories make the digest. Everything else is hidden (kept in the ledger for auto-expiry or future digests):
+- **Tier 0 — Overdue**: has a `due` date that has already passed. Sorted most-overdue first.
+- **Tier 1 — Due soon**: has a `due` date within the next 14 days. Sorted by nearest deadline.
+- **Tier 2 — Fresh**: created in the last 7 days (no due date or due date >14 days out). Sorted by creation date.
+
+Both sections are capped at 7 items. If more than 7 active-tier items exist in a section, the newest overflow is hidden — the hidden tail is counted in `mine_hidden` / `owed_hidden`. `mine_total` / `owed_total` carry un-filtered totals for the Slack heads-up.
 
 Items whose `owner` is empty or literally `"unassigned"` (typically the result of a prior `not-mine: N` reply) are filtered out of both arrays — they remain in the ledger for audit but stop adding noise to the digest.
 
