@@ -51,7 +51,7 @@ The ledger has been accumulating decisions and commitments since v1 shipped, but
 - No batch/bulk operations on the ledger beyond the new `update_commitment_state` primitive. No bulk done/drop/state-history queries.
 - No web UI, no new MCP tools. The digest is email + Slack only.
 - No changes to the briefing (`/briefing`) or follow-up (`/follow-up`) commands' core behaviour. /follow-up grows one new branch in Step 0 (awaiting-digest dispatch); everything else stays.
-- The "Yours" filter is text-based ("You", "Mark", "Mark McDermott", `MY_EMAIL`). No formal identity resolution — if a commitment's owner is "M McDermott" with a different spelling, it may not match. Pragmatic, not exhaustive.
+- The "Yours" filter is text-based ("You", "Mark", "Alex Johnson", `MY_EMAIL`). No formal identity resolution — if a commitment's owner is "M McDermott" with a different spelling, it may not match. Pragmatic, not exhaustive.
 
 ### Deferred to Follow-Up Work
 
@@ -99,7 +99,7 @@ None required. All work is internal to existing patterns.
 - **Smart pre-marking is Gmail-only and best-effort.** Claude scans the Gmail search results for substring/semantic matches. If unsure, no mark. Failure modes (Gmail search timeout, gws unavailable) degrade gracefully to no marks at all rather than failing the digest.
 - **Idempotency by filename, not by lockfile.** The digest output file is `~/Briefings/YYYY-MM-DD-1000-digest.md`. If it exists already, the scheduler's "digest already done today" check skips. Same pattern as briefings and follow-ups.
 - **30-day expiry on awaiting-digest state files.** Mirrors awaiting-reply. After 30 days, the file is deleted by Step 0's expiry check.
-- **"You" string-matching for ownership.** `MY_EMAIL` from `~/.briefings_config` is the anchor; case-insensitive substring matches against "You", "Mark", "Mark McDermott", and the email itself catch the common cases. Pragmatic — formal identity resolution is overkill for a personal tool.
+- **"You" string-matching for ownership.** `MY_EMAIL` from `~/.briefings_config` is the anchor; case-insensitive substring matches against "You", "Mark", "Alex Johnson", and the email itself catch the common cases. Pragmatic — formal identity resolution is overkill for a personal tool.
 
 ---
 
@@ -244,7 +244,7 @@ nudges:
 - Modeled on the structure of `commands/follow-up.md` — numbered Steps, prose for Claude to execute, embedded heredocs for Python.
 - Steps:
   - **Step 0: Pre-flight.** Read `MY_EMAIL` and `COMPANY_DOMAIN` from `~/.briefings_config`. Check if today's digest file already exists at `~/Briefings/YYYY-MM-DD-1000-digest.md`; if so, exit (idempotent).
-  - **Step 1: Pull open commitments from the ledger.** Use `briefings_mcp.query.search_decisions(state="open", type="commitment")` or iter_entries + filter in Python. Split into "Yours" (owner matches MY_EMAIL or "You" or "Mark" or "Mark McDermott", case-insensitive) and "Owed to you" (everything else where attendees contains MY_EMAIL).
+  - **Step 1: Pull open commitments from the ledger.** Use `briefings_mcp.query.search_decisions(state="open", type="commitment")` or iter_entries + filter in Python. Split into "Yours" (owner matches MY_EMAIL or "You" or "Mark" or "Alex Johnson", case-insensitive) and "Owed to you" (everything else where attendees contains MY_EMAIL).
   - **Step 2: Smart pre-marking for Yours.** For each Yours commitment, run a Gmail search via gws: `gws gmail search --query "in:sent after:<created_at>"` plus keyword search for the commitment's key nouns. If a likely match found (Claude judges), mark the item with `done?`. On any gws error, skip pre-marking and continue (best-effort, graceful).
   - **Step 3: Build nudge drafts.** For each Owed-to-you item older than 14 days OR past its `due` date, draft a 2–3 sentence reminder email. Look up the owner's email by intersecting the commitment's `attendees` with `owner` (substring match on name).
   - **Step 4: Assemble the digest markdown.** See High-Level Technical Design for shape. Three sections + reply-keyword footer. Save to `~/Briefings/YYYY-MM-DD-1000-digest.md`, chmod 600.
@@ -490,7 +490,7 @@ nudges:
 | Reply-keyword index drift if the user replies after multiple cycles. | The state file's `mine` / `owed` / `nudges` arrays are fixed at creation. Subsequent digests get fresh state files with fresh indices. The user replying to an old digest still works against that digest's indices. |
 | Two scheduler cycles fire within the 10:00–10:14 window (e.g. 10:00 and 10:15 if the cron starts at :00). | The "digest file already exists for today" check guarantees idempotency. The 10:14 cutoff is just for clarity; even a 10:15 fire would skip because the 10:00 file exists. |
 | The user is in a different timezone than expected when traveling. | `date +%u` and `date +%H:%M` use local time. The digest fires at 10am wherever the laptop is. Acceptable. |
-| The "Yours" string-matching misses commitments where the owner is spelled unusually. | The pragmatic match list (You / Mark / Mark McDermott / MY_EMAIL) covers the common cases. If unusual spellings become a problem, add to the match list. |
+| The "Yours" string-matching misses commitments where the owner is spelled unusually. | The pragmatic match list (You / Mark / Alex Johnson / MY_EMAIL) covers the common cases. If unusual spellings become a problem, add to the match list. |
 | Update.sh propagation gap. | `update.sh` already handles command-file propagation; U5 adds digest.md to the list. Same risk as Phase 1/2, same mitigation. |
 
 ---

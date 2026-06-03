@@ -49,7 +49,7 @@ def main() -> int:
     cases: list[Tuple[str, Tuple, str]] = [
         ("bare email", parse_from_address("you@example.com"), (None, "you@example.com")),
         ("angle brackets only", parse_from_address("<you@example.com>"), (None, "you@example.com")),
-        ("display name + brackets", parse_from_address("Mark McDermott <you@example.com>"), ("Mark McDermott", "you@example.com")),
+        ("display name + brackets", parse_from_address("Alex Johnson <you@example.com>"), ("Alex Johnson", "you@example.com")),
         ("trailing whitespace", parse_from_address("  you@example.com  "), (None, "you@example.com")),
         ("display with leading space", parse_from_address("  Mark <you@example.com>"), ("Mark", "you@example.com")),
         ("empty header", parse_from_address(""), (None, "")),
@@ -61,19 +61,19 @@ def main() -> int:
     section("classify_message — user reply (process)")
     _check(
         "display name + matching address + no watermark → process",
-        classify_message("Mark McDermott <you@example.com>", MY, None, "msg-1"),
+        classify_message("Alex Johnson <you@example.com>", MY, None, "msg-1"),
         "process",
         results,
     )
     _check(
         "case-insensitive address match still processes",
-        classify_message("Mark McDermott <You@Example.Com>", MY, "msg-0", "msg-1"),
+        classify_message("Alex Johnson <You@Example.Com>", MY, "msg-0", "msg-1"),
         "process",
         results,
     )
     _check(
         "empty watermark string does NOT match (treated as no watermark)",
-        classify_message("Mark McDermott <you@example.com>", MY, "", "msg-1"),
+        classify_message("Alex Johnson <you@example.com>", MY, "", "msg-1"),
         "process",
         results,
     )
@@ -81,7 +81,7 @@ def main() -> int:
     section("classify_message — watermark match (skip_watermark)")
     _check(
         "watermark exactly equals current msg id → skip_watermark",
-        classify_message("Mark McDermott <you@example.com>", MY, "msg-1", "msg-1"),
+        classify_message("Alex Johnson <you@example.com>", MY, "msg-1", "msg-1"),
         "skip_watermark",
         results,
     )

@@ -15,7 +15,7 @@ The actions tracker remains a tracker of concrete commitments only — things th
 
 By 2026-05-29 the digest had ~46 open commitments. A discerning read showed three different kinds of content conflated under the single `commitment` type:
 
-1. **Concrete actions** — things with a doer, a deliverable, and a done-state ("Call the accountant about the Portugal tax position"). These are what the tracker exists for.
+1. **Concrete actions** — things with a doer, a deliverable, and a done-state ("Send the vendor contract to legal by Friday"). These are what the tracker exists for.
 2. **Stances** — decisions the user made about how to show up in future conversations ("position as Cédric's ally on Pulse", "stick to internal-PMF message in board comms", "keep Board vs Advisor roles separated"). No done-state. No moment when "it's done."
 3. **FYI items** — tactical work by other attendees that the user heard but doesn't drive ("Aidan to install Claude-for-Playgrounds and demo to Johnny"). The user is incidentally present, not waiting on the deliverable for their own progress.
 
