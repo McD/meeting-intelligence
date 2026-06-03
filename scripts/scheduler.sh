@@ -347,9 +347,10 @@ run_claude() {
     local label="$1"
     local prompt="$2"
     log "Running: $label"
-    local output rc attempt
+    local output rc attempt t
     for attempt in 1 2; do
-        output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p "$prompt" 2>&1)
+        t=$([ "$attempt" = "1" ] && echo "$CLAUDE_TIMEOUT_SECONDS" || echo $(( CLAUDE_TIMEOUT_SECONDS / 2 )))
+        output=$(run_with_watchdog "$t" "$CLAUDE" -p "$prompt" 2>&1)
         rc=$?
         if [ "$attempt" = "1" ] && [ "$rc" -ne 0 ] \
             && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
