@@ -337,17 +337,38 @@ fi
 # EXIT trap and the next launchd tick takes over.
 CLAUDE_TIMEOUT_SECONDS=1200
 
+# Transient Anthropic SDK errors. Most overnight occurrences happen during macOS
+# dark-wake transitions where the network briefly drops mid-request. Retry once
+# within the cycle (30s back-off) so a single socket blip doesn't fire a Slack
+# alert and wait 15 min for the next launchd tick to recover.
+TRANSIENT_API_ERROR_RE='socket connection was closed unexpectedly|ECONNRESET|fetch failed|Connection error|network error'
+
 run_claude() {
     local label="$1"
     local prompt="$2"
     log "Running: $label"
-    local output rc
-    output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p "$prompt" 2>&1)
-    rc=$?
+    local output rc attempt
+    for attempt in 1 2; do
+        output=$(run_with_watchdog "$CLAUDE_TIMEOUT_SECONDS" "$CLAUDE" -p "$prompt" 2>&1)
+        rc=$?
+        if [ "$attempt" = "1" ] && [ "$rc" -ne 0 ] \
+            && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
+            log "WARN: $label hit transient API error on attempt 1 — retrying in 30s."
+            sleep 30
+            continue
+        fi
+        break
+    done
+    if [ "$attempt" = "2" ] && [ "$rc" -eq 0 ]; then
+        log "INFO: $label recovered on retry."
+    fi
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
         log "ERROR: $label timed out after ${CLAUDE_TIMEOUT_SECONDS}s (Claude killed)."
         notify_slack ":hourglass: Briefings stalled — Claude Code did not return within ${CLAUDE_TIMEOUT_SECONDS}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
+    elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
+        log "ERROR: $label hit transient API errors on both attempts."
+        notify_slack ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
     elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
         log "ERROR: $label auth failure."
         notify_slack ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
