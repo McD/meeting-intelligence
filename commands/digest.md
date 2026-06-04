@@ -189,38 +189,40 @@ Items whose `owner` is empty or literally `"unassigned"` (typically the result o
 
 ## Step 2: Enrich items with cross-source signals (best-effort)
 
-For each item in **both** `mine` and `owed`, gather two best-effort signals before rendering: a `done?` confidence hint, and the next upcoming meeting where this item could be raised in person. Both are best-effort — the digest must ship even if every signal lookup fails.
+For each item in **both** `mine` and `owed`, gather two best-effort signals before rendering: a `done?` confidence hint with a short evidence snippet, and the next upcoming meeting where this item could be raised in person. Both are best-effort — the digest must ship even if every signal lookup fails.
 
-Don't over-apply. The goal is to catch the obvious cases where the user has clearly already done the thing, the owner has clearly already shipped it, or the user has a natural moment coming up to act on it. Conservative wins — false positives erode trust in the digest faster than misses.
+**Bias toward marking, not against.** A `*done?*` mark is a hint, not a state change — the user confirms with `done: N` / `done-owed: N` or ignores it. False positives cost a 5-second skip; false negatives mean an actioned item sits stale in the digest week after week and the user stops trusting it. Trust the user to overrule; do not require the system to be cautious. If any one source has a reasonable match, mark it. Multiple weak signals also count.
 
-### 2a. Done-detection via Gmail + Slack (`done_hint`)
+### 2a. Done-detection (`done_hint` and `done_evidence`)
 
-For each item, extract 2–3 key nouns from the commitment summary (e.g. "send pricing memo to Acme" → "pricing", "Acme") and check whether the relevant person has been writing about those topics in the window from `created_at` to now. If a credible match exists, set `done_hint: true`. Otherwise leave it `false`.
+Three sources. **Any single source with a reasonable match is enough** — don't require corroboration. Extract 2–3 key nouns from the commitment summary (e.g. "send pricing memo to Acme" → "pricing", "Acme") and run the checks in parallel where possible.
 
-**For `mine` items**, the relevant person is the user. Two sources:
+1. **Gmail sent items** (mine items only) — `gws gmail search --params '{"userId": "me", "q": "in:sent after:YYYY/MM/DD <keywords>"}'` (slashes for Gmail's date syntax; substitute the commitment's `created_at` date and the extracted keywords). A sent message after `created_at` that mentions the topic counts. For "Send X to Y" actions, prefer mail addressed to Y.
 
-- **Gmail sent items** — `gws gmail search --params '{"userId": "me", "q": "in:sent after:YYYY/MM/DD <keywords>"}'` (slashes for Gmail's date syntax; substitute the commitment's `created_at` date and the extracted keywords).
-- **Slack** — invoke the `slack_search_public_and_private` MCP tool with a query that scopes to the user and the keywords, e.g. `from:@<user-handle> "<keyword>" after:<YYYY-MM-DD>`. The user's Slack handle is typically the local-part of `MY_EMAIL`; if the handle lookup is ambiguous, search without `from:` and filter the first 2–3 results by author manually.
+2. **Slack messages** — invoke `slack_search_public_and_private` with the keywords and a date filter `after:<YYYY-MM-DD>` matching `created_at`. For `mine` items, scope to `from:@<user-handle>` (local-part of `MY_EMAIL`). For `owed` items, scope to the owner — resolve via `slack_search_users` if the handle is unclear, otherwise pass the display name. If the scoping query returns nothing, retry without the `from:` filter and read the first 2–3 results to decide whether the relevant person was the author. A single credible Slack message counts.
 
-If either source returns a message that genuinely corresponds to the action (read the first 2–3 results and use judgement — don't trust raw counts), set `done_hint: true`.
+3. **Calendar history** — for commitments whose wording suggests a verbal resolution ("speak to X", "follow up with X", "discuss with", "raise with X", "call X", "ask X"), check whether the user has met with the relevant person since `created_at`. Reuse the calendar fetch from Step 2b but widen the window to start at the earliest commitment's `created_at`:
 
-**For `owed` items**, the relevant person is the commitment's `owner`. One source:
+   ```bash
+   gws calendar events list --params '{"calendarId": "primary", "timeMin": "<earliest created_at ISO>", "timeMax": "<now+14d ISO>", "singleEvents": true, "orderBy": "startTime"}'
+   ```
 
-- **Slack** — search for messages from the owner mentioning the keywords in the same window. Resolve the owner to a Slack handle via `slack_search_users` if needed, otherwise pass the name directly into the query. Gmail is not searched for owed items (the user only sees the owner's mail when CC'd, which is too narrow to be useful).
+   For each verbal-action item, look for any past event whose attendees include the relevant person (the owner for `owed` items; for `mine` items, parse the name out of the summary — "Speak to Carl" → `Carl`). Match attendees by display-name substring or email local-part. A single past meeting with that person counts.
 
-If a credible match exists, set `done_hint: true` on the owed item too. The `*done?*` mark renders in the digest the same way for both sections; the user can then confirm via `done: N` (Yours) or `done-owed: N` (Owed).
+**Capture evidence**. When marking `done_hint: true`, also set `done_evidence` to a short scannable snippet so the user can confirm in seconds without leaving the digest:
+- Slack: `done_evidence: "Slack 28 May"` (date of the matching message)
+- Gmail: `done_evidence: "Gmail sent 30 May"`
+- Calendar: `done_evidence: "met Carl 1 Jun"` (or `"discussed with Carl 1 Jun"` for shared meetings)
 
-**Skip on error.** If gws is unavailable, if any MCP search errors out, or if the results are ambiguous, leave `done_hint: false` and continue. The pre-marking is informational; a missing signal is fine.
+If multiple sources match, pick the most recent or most specific one — one snippet per item, keep it under ~25 characters.
+
+**Skip on error**: if any single source errors (network failure, MCP unavailable, gws not installed), continue with the remaining sources. Only when all 3 sources fail for a given item, leave `done_hint: false` and `done_evidence: null`. Track the all-fail count and surface it in the Slack heads-up tail as `(N items couldn't be auto-checked)` so the user knows when the system is partially blind.
+
+**What never counts**: do not mark `done?` from the commitment text alone (e.g. "the wording implies it's a recurring intention"). Evidence must come from one of the three sources, dated after `created_at`.
 
 ### 2b. Upcoming-meeting cross-reference (`next_meeting`)
 
-Fetch the user's calendar events for the next 14 days in a single call:
-
-```bash
-gws calendar events list --params '{"calendarId": "primary", "timeMin": "<now ISO>", "timeMax": "<now+14d ISO>", "singleEvents": true, "orderBy": "startTime"}'
-```
-
-Then for each item in `mine` and `owed`, look for the soonest event whose attendees intersect the item's `attendees` (excluding the user themselves). Annotate the item with `next_meeting: {"name": "<event summary>", "date": "<YYYY-MM-DD>"}`.
+Reuse the wider calendar fetch from Step 2a Source 3 (which already covers past + 14 days into the future). Then for each item in `mine` and `owed`, look at the **future** slice only (events with start time `>= now`) and pick the soonest event whose attendees intersect the item's `attendees` (excluding the user themselves). Annotate the item with `next_meeting: {"name": "<event summary>", "date": "<YYYY-MM-DD>"}`.
 
 For `owed` items specifically, prefer events whose attendee list includes the item's `owner` (resolve by email substring or display-name match against the event attendees). If no event matches the owner but other attendees of the commitment do match, fall back to the soonest of those — bringing the item up with anyone from the original meeting is better than waiting for the perfect attendee.
 
@@ -340,7 +342,7 @@ The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N da
 
 **`<meeting name>` rendering**. Use the record's `meeting_title` verbatim when it is non-empty — that is the calendar event's original title (`AI Proposal Review (Data Tools)`, `1:1 Mark / Cedric`) preserved by `/follow-up`. When `meeting_title` is empty (legacy entries written before that field was captured), fall back to `briefings_mcp.format.pretty_meeting_title(source_meeting)`, which strips the date prefix and converts the kebab slug into a readable title with common acronyms (AI, SC, McD, ScreenCloud) restored. Do not feed the raw `source_meeting` slug into the rendered digest.
 
-**`done?` rendering**: prepend `*done?*` *after* the number and dot, before the parenthesized age. Renders as: `2. *done?* *(open 5 days)* Draft 5-page state-of-industry document — Q3 Planning, 20 May`. The same rendering applies to both Yours items (where `done_hint` came from Gmail or Slack matches for the user) and Owed items (where `done_hint` came from Slack matches for the owner).
+**`done?` rendering**: prepend `*done? (<evidence>)*` *after* the number and dot, before the parenthesized age, using the `done_evidence` snippet captured in Step 2a. Renders as: `2. *done? (Slack 28 May)* *(open 5 days)* Draft 5-page state-of-industry document — Q3 Planning, 20 May`. If `done_hint: true` but no evidence snippet was captured (rare — only when capture failed mid-detection), fall back to plain `*done?*`. The same rendering applies to both Yours items and Owed items; the evidence snippet makes the confirmation reply a glance-and-go decision.
 
 ---
 
@@ -361,7 +363,7 @@ SEND_MSG_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sy
 :bookmark_tabs: Actions tracker delivered — <N> yours / <M> owed.
 ```
 
-Where N is `mine_total` and M is `owed_total` (the un-capped totals — the Slack heads-up reflects the real backlog, not just what was rendered). If smart pre-marking flagged some items, add `(<K> may already be done)` to the end.
+Where N is `mine_total` and M is `owed_total` (the un-capped totals — the Slack heads-up reflects the real backlog, not just what was rendered). If smart pre-marking flagged some items, add `(<K> may already be done)` to the end. If Step 2a hit all-source failures for any items, also append `(<J> couldn't be auto-checked)` so the user knows when the system is partially blind.
 
 **"Nothing open" branch** — if both `mine` and `owed` are empty (skipped from Step 1), skip the email entirely. Slack notice:
 

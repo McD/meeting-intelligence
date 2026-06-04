@@ -83,6 +83,22 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   to `"unassigned"` are filtered out of both Yours and Owed-to-you (kept in
   the ledger for audit; suppressed from the rendered digest).
 
+### Changed
+
+- **`/digest` Step 2a is now aggressive about done-detection**, with three
+  sources (Gmail, Slack, calendar history) and a `done_evidence` snippet
+  rendered alongside `*done?*` so the user can confirm in seconds. Prior
+  spec told the LLM "conservative wins — false positives erode trust";
+  the inversion is intentional. False negatives (an actioned item sits
+  stale week after week) were eroding trust more than false positives
+  would. Calendar history is a new third signal: verbal-resolution
+  commitments ("speak to X", "follow up with X", "call X") trip `done?`
+  if the user has met with X since `created_at`. The calendar fetch is
+  widened to span `earliest created_at → now+14d` and shared between
+  Step 2a (past) and Step 2b (future). Items where all three sources
+  fail are now counted and surfaced in the Slack heads-up as
+  `(N couldn't be auto-checked)`.
+
 ### Fixed
 
 - **Digest numbering resets across items in the rendered email.** The
