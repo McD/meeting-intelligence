@@ -278,46 +278,56 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    **Audit trail for skipped intermediate replies.** Same shape as the awaiting-reply branch: if the prior `last_processed_msg` was non-empty and earlier messages in the array also pass the From/display-name checks (user replies superseded before processing), log each one as `"WARN: Awaiting-digest skipped intermediate user reply <message_id> — processing only the latest"`.
 
-5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines). Lowercase the keyword prefix; preserve case in any argument that follows. Match against:
+5. **Parse every command line.** Walk every non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines, the trailing `On <date>, <addr> wrote:` separator, and any signature block after `-- `). Lowercase each line's keyword prefix; preserve case in any argument that follows. Build a list of recognized actions and a list of unrecognized lines. **Mixing keywords on different lines is the supported way to do several things in one reply** — e.g. `done: 1, 3` on line one and `done-owed: 2, 5` on line two are both applied. Order within the reply doesn't matter; the dispatcher aggregates first, then executes.
 
-   - `cancel` / `skip` / `no` / `done` (standalone) → delete the awaiting-digest file, log, done. No acknowledgment reply (silent drop). (No watermark write — file is gone.)
+   **Execution order for the parsed plan:**
+   1. If any line is a standalone terminator (`cancel`, `skip`, `no`, or `done` with no args), discard all other parsed actions, delete the awaiting-digest file, log `"Awaiting-digest cancelled — file deleted; <K> other keywords on this reply were discarded"` (substitute K, omit the trailing phrase if K is zero), and exit. No ack reply. No watermark write.
+   2. Otherwise, write the watermark via Step 6 **once, up front** with `last_processed_msg: <user_reply_message_id>`. This protects every subsequent action (ledger mutations, sends, research) from re-running on a crash mid-execution. The previous "send: writes watermark first, others write last" ordering collapses into a single up-front write for multi-keyword replies — `send:` still benefits from the same crash semantics.
+   3. Run each recognized action against the ledger, calendar, or external endpoint, in this stable order: `not-mine`, `done`, `drop`, `done-owed`, `drop-owed`, `more`, `send`, `research`, `extend`. Reason for the order: ownership corrections (`not-mine`) fire before state mutations so a re-attributed item isn't also marked done in the same pass; `extend` runs last so its state-file rewrite includes the watermark and every prior mutation's index change.
+   4. Aggregate all results into a single ack reply (see "Aggregated ack format" below) rather than sending one reply per keyword — multiple acks on the same thread spam the user and confuse the watermark.
 
-   - `extend` / `wait` / `more time` → rewrite the state file per Step 6 with `created_at: <now>` (all other fields unchanged). Log `"Awaiting-digest extended — 30-day clock reset"`. Send a one-line ack reply: `"Extended — this digest stays open for another 30 days."`
+   **Aggregated ack format** — one reply per user message, with one section per recognized keyword that fired, in the same execution order as above. Each section is a bold header + bulleted summaries. Unrecognized lines, if any, get a final section. Skip sections that had no items. Example for a reply containing `done: 1, 3` + `done-owed: 2, 5` + a `done-new: 4` typo:
 
-   - `done: N[, M, ...]` — for each index N (1-based), look up `mine[N-1]` (the UUID). Call `briefings_mcp.ledger.update_commitment_state(uuid, "done")` for each. Then send one ack reply summarising the changes:
-     ```
-     Marked done:
-     - <summary of mine[N-1]>
-     - <summary of mine[M-1]>
-     ```
-     If an index is out of range, include a line: `Couldn't find item N — only X in this digest.` and continue with the in-range indices.
+   ```
+   **Marked done (Yours):**
+   - <summary of mine[0]>
+   - <summary of mine[2]>
 
-   - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack `"Dropped: …"`.
+   **Marked done (Owed):**
+   - <summary of owed[1]>
+   - <summary of owed[4]>
 
-   - `not-mine: N[, M, ...]` (optional `→ <name>` suffix for reassignment) — disowns a Yours item that shouldn't have been attributed to the user. For each index N (1-based), look up `mine[N-1]` (the UUID). If the reply line contains a `→` (or ` -> `), parse everything after the arrow as the new owner name (stripped, preserving case). Otherwise the new owner is the literal string `"unassigned"`. Call `briefings_mcp.ledger.update_commitment_owner(uuid, new_owner)` for each. Ack:
-     ```
-     Re-attributed:
-     - <summary of mine[N-1]> → <new_owner>
-     - <summary of mine[M-1]> → <new_owner>
-     ```
-     The reassigned items vanish from the next digest's Yours section. If `new_owner` was `"unassigned"`, the items also stay out of Owed-to-you (the digest filters unassigned-owner items from both sections). If `new_owner` is a named person who isn't the user, the items reappear in Owed-to-you on the next cycle. Out-of-range indices include `Couldn't find item N — only X in this digest.` and continue with in-range indices.
+   **Didn't recognize:**
+   - `done-new: 4` — did you mean `done-owed: 4`? Try again with one of: `done`, `done-owed`, `more`, `drop`, `not-mine`, `drop-owed`, `send`, `research`, `cancel`, `extend`.
+   ```
 
-   - `drop-owed: N[, M, ...]` — same shape as `drop:` but indexes into `owed[]` (the **Owed to you** section) rather than `mine[]`. For each index N (1-based), look up `owed[N-1]` (the UUID), call `update_commitment_state(uuid, "dropped")`. Ack `"Dropped from Owed: …"`. Use this for FYI items captured as commitments that aren't actually owed to the user. Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
+   Keep section headers literal; substitute summaries from the resolved UUIDs. Out-of-range indices stay as inline error lines within their section (e.g. `Couldn't find Owed item 9 — only 7 in this digest.`).
 
-   - `done-owed: N[, M, ...]` — same shape as `done:` but indexes into `owed[]`. For each N, look up `owed[N-1]` and call `update_commitment_state(uuid, "done")`. Ack `"Marked Owed as done: …"`. Use this when Step 2's Slack pre-marking flagged an Owed item with `*done?*` and you can confirm the owner shipped it (or when you just learned independently). Out-of-range indices: `Couldn't find Owed item N — only X in this digest.`.
+   **Per-keyword semantics** — each line is matched against the table below. Multi-line behavior just runs each match in turn; the per-keyword effect is unchanged from when the dispatcher only parsed the first line:
 
-   - `research: <query>` — web research, same handler shape as the awaiting-reply branch's `research:` (see Step 5 of the awaiting-reply branch above). Use the `WebSearch` MCP tool with the query, optionally `WebFetch` any URLs in the query, synthesize a 200–800 word HTML response using the same renderer as the digest itself, send as a reply to the digest thread, and Slack-mirror if `~/.slack_webhook` exists. Log `"Research request handled for digest: [first 60 chars of query]"`.
+   - `cancel` / `skip` / `no` / `done` (standalone, no args) → terminator, handled by execution-order step 1 above: deletes the awaiting-digest file, no ack reply, no watermark write. If mixed with other keywords on the same reply, the terminator wins and the other keywords are discarded.
 
-   - `more: N[, M, ...]` — no state change. Ack: `"Snoozed to next digest: <summaries>"`. Log.
+   - `extend` / `wait` / `more time` → rewrites the state file with `created_at: <now>` (all other fields, including the watermark already written in execution-order step 2, preserved). Contributes an `**Extended:** this digest stays open for another 30 days.` section to the aggregated ack. Log `"Awaiting-digest extended — 30-day clock reset"`.
 
-   - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record). **This branch reverses the normal send-then-watermark ordering.** Because the nudge goes to an EXTERNAL recipient (not the user's own thread), a double-fire would mean the recipient receives the same nudge twice — a real social cost that other keywords don't carry. Order of operations:
-     1. **First**, write the watermark per Step 6 with `last_processed_msg: <user_reply_message_id>`. This ensures the next cycle will skip even if step 2 below crashes mid-send.
-     2. **Then** send the nudge via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`.
-     3. Ack to the digest thread: `"Nudge sent to <to>."` If send fails (step 2), ack: `"Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry."` — the watermark is already written, so explicit retry is the recovery path. This favors "may miss a nudge under crash, never duplicate" over "always send, may duplicate". Document this for the user in the ack so retry semantics are visible.
+   - `done: N[, M, ...]` — for each index N (1-based), look up `mine[N-1]` (the UUID) and call `briefings_mcp.ledger.update_commitment_state(uuid, "done")`. Contributes a `**Marked done (Yours):**` section to the aggregated ack with one bullet per resolved item's summary. Out-of-range indices appear as inline lines like `Couldn't find item N — only X in this digest.` within the section, and processing continues with the in-range indices.
 
-   - **Anything else** — one-line clarification reply: `"Didn't recognize '<first line>' — try \`done: N\`, \`done-owed: N\`, \`more: N\`, \`drop: N\`, \`not-mine: N\`, \`drop-owed: N\`, \`send: N\`, \`research: <query>\`, \`cancel\`, or \`extend\`."`. Leave state file.
+   - `drop: N[, M, ...]` — same shape as `done:` but with `update_commitment_state(uuid, "dropped")` and ack section header `**Dropped (Yours):**`.
 
-6. **Atomic state-file rewrite (single watermark write site).** After Step 5 completes for any branch EXCEPT `cancel` (which already deleted the file), rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
+   - `not-mine: N[, M, ...]` (optional `→ <name>` suffix for reassignment) — disowns a Yours item that shouldn't have been attributed to the user. For each index N (1-based), look up `mine[N-1]` (the UUID). If the reply line contains a `→` (or ` -> `), parse everything after the arrow as the new owner name (stripped, preserving case). Otherwise the new owner is the literal string `"unassigned"`. Call `briefings_mcp.ledger.update_commitment_owner(uuid, new_owner)` for each. Contributes `**Re-attributed:**` to the ack with bullets shaped `<summary> → <new_owner>`. The reassigned items vanish from the next digest's Yours section. If `new_owner` was `"unassigned"`, the items also stay out of Owed-to-you (the digest filters unassigned-owner items from both sections). If `new_owner` is a named person who isn't the user, the items reappear in Owed-to-you on the next cycle.
+
+   - `drop-owed: N[, M, ...]` — same shape as `drop:` but indexes into `owed[]` (the **Owed to you** section) rather than `mine[]`. For each index N (1-based), look up `owed[N-1]` (the UUID), call `update_commitment_state(uuid, "dropped")`. Ack section `**Dropped (Owed):**`. Use this for FYI items captured as commitments that aren't actually owed to the user.
+
+   - `done-owed: N[, M, ...]` — same shape as `done:` but indexes into `owed[]`. For each N, look up `owed[N-1]` and call `update_commitment_state(uuid, "done")`. Ack section `**Marked done (Owed):**`. Use this when Step 2's pre-marking flagged an Owed item with `*done?*` and you can confirm the owner shipped it (or when you just learned independently).
+
+   - `research: <query>` — web research, same handler shape as the awaiting-reply branch's `research:` (see Step 5 of the awaiting-reply branch above). Use the `WebSearch` MCP tool with the query, optionally `WebFetch` any URLs in the query, synthesize a 200–800 word HTML response using the same renderer as the digest itself, send as a reply to the digest thread, and Slack-mirror if `~/.slack_webhook` exists. Log `"Research request handled for digest: [first 60 chars of query]"`. Research replies go out as a **separate** message (their long HTML body would swamp the keyword ack); the aggregated ack still mentions `**Research:** <first 60 chars> — sent as separate reply.`
+
+   - `more: N[, M, ...]` — no state change. Ack section `**Snoozed to next digest:**` with one bullet per item.
+
+   - `send: N` — look up `nudges[N-1]` (the `{to, subject, body}` record) and send it via `gws gmail +send --to "<to>" --subject "<subject>" --body "<body>"`. Ack section `**Nudge sent:**` listing each recipient. If send fails, the bullet for that nudge reads `Couldn't send nudge #N: <error>. Reply \`send: N\` again to retry.` and the rest of the aggregated reply continues. The watermark was already written up-front (execution-order step 2), so a crash mid-send leaves the watermark set and explicit `send: N` retry is the recovery path. Multi-keyword replies that combine `send:` with other keywords inherit this same crash semantics for free.
+
+   - **Anything else** — keep the literal line text (preserving original case) and add it to the unrecognized list. The aggregated ack's `**Didn't recognize:**` section bullets each one and points at the keyword set. Don't try to fuzzy-match — let the user retype.
+
+6. **Atomic state-file rewrite (single watermark write site).** Called by Step 5's execution-order step 2 (up-front, before any keyword action runs) for any reply that is NOT a terminator. Rewrite the state file with `last_processed_msg: <user_reply_message_id>` and every other field preserved. Use the atomic tmp+rename pattern modelled on `briefings_mcp/ledger.py:189-196`:
 
    ```bash
    umask 077
@@ -336,7 +346,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    Never overwrite the state file in place. A crash mid-write would truncate `thread_id` / `mine` / `owed` / `nudges` and lose every action item the digest tracked. The tmp+rename pattern is atomic — either the new file fully exists or the old one does.
 
-   This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, `research:`, and the unrecognized-keyword branch. `send:` calls into Step 6 BEFORE its external send (see step 5); every other keyword calls into Step 6 AFTER its action.
+   This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, `research:`, and the unrecognized-keyword branch. Step 5's execution-order step 2 calls into this routine once per reply, **before** any keyword action runs. The previous "send: writes first, others write last" split is retired — under multi-keyword parsing every action benefits from the same crash-safe up-front watermark.
 
 7. Process every awaiting-digest file before falling through to Step 1.
 

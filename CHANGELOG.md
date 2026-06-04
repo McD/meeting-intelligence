@@ -85,6 +85,18 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 
 ### Changed
 
+- **Digest reply dispatcher parses every line, not just the first.** Step 5
+  of `commands/follow-up.md` previously took only the first non-empty,
+  non-quoted line and matched a single keyword. A reply like
+  `done: 1, 3\ndone-owed: 2, 5` silently dropped the second line. The
+  dispatcher now walks every line, classifies each independently, and
+  aggregates the results into a single ack reply with one section per
+  recognized keyword. The watermark is written once up-front (was: per
+  keyword, with `send:` reversed) so a crash mid-execution can't double-fire
+  any action. Unrecognized lines are listed in a `**Didn't recognize:**`
+  section of the same ack rather than triggering a separate clarification
+  email. Terminators (`cancel` / `skip` / `no` / standalone `done`) still
+  override everything else.
 - **`/digest` Step 2a is now aggressive about done-detection**, with three
   sources (Gmail, Slack, calendar history) and a `done_evidence` snippet
   rendered alongside `*done?*` so the user can confirm in seconds. Prior
