@@ -16,32 +16,45 @@ def _close_lists(out, state):
 def md_to_html(path):
     lines = open(path).read().split('\n')
     out = []
-    state = {'ul': False, 'ol': False}
+    state = {'ul': False, 'ol': False, 'pending_blank': False}
     for line in lines:
         if line.startswith('# '):
             _close_lists(out, state)
+            state['pending_blank'] = False
             out.append(f'<h2 style="margin:0 0 4px 0">{_inline(line[2:])}</h2>')
         elif line.startswith('## '):
             _close_lists(out, state)
+            state['pending_blank'] = False
             out.append(f'<h3 style="margin:20px 0 4px 0;border-bottom:1px solid #eee;padding-bottom:4px">{_inline(line[3:])}</h3>')
         elif line.startswith('### '):
             _close_lists(out, state)
+            state['pending_blank'] = False
             out.append(f'<h4 style="margin:12px 0 2px 0">{_inline(line[4:])}</h4>')
-        elif re.match(r'^\s*- ', line):
-            if state['ol']: out.append('</ol>'); state['ol'] = False
-            content = re.sub(r'^\s*- ', '', line)
-            if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
-            out.append(f'<li style="margin:3px 0">{_inline(content)}</li>')
         elif re.match(r'^\s*\d+\.\s+', line):
             if state['ul']: out.append('</ul>'); state['ul'] = False
             content = re.sub(r'^\s*\d+\.\s+', '', line)
             if not state['ol']: out.append('<ol style="margin:4px 0;padding-left:24px">'); state['ol'] = True
             out.append(f'<li style="margin:3px 0">{_inline(content)}</li>')
+            state['pending_blank'] = False
+        elif re.match(r'^\s*- ', line):
+            if state['ol']: out.append('</ol>'); state['ol'] = False
+            content = re.sub(r'^\s*- ', '', line)
+            if not state['ul']: out.append('<ul style="margin:4px 0;padding-left:20px">'); state['ul'] = True
+            out.append(f'<li style="margin:3px 0">{_inline(content)}</li>')
+            state['pending_blank'] = False
         elif line.strip() == '':
-            _close_lists(out, state)
-            out.append('<div style="margin:6px 0"></div>')
+            if state['ul'] or state['ol']:
+                state['pending_blank'] = True
+            else:
+                out.append('<div style="margin:6px 0"></div>')
+        elif (state['ul'] or state['ol']) and re.match(r'^\s+\S', line) and out and out[-1].endswith('</li>'):
+            content = line.strip()
+            sep = '<br><br>' if state['pending_blank'] else '<br>'
+            out[-1] = out[-1][:-5] + sep + _inline(content) + '</li>'
+            state['pending_blank'] = False
         else:
             _close_lists(out, state)
+            state['pending_blank'] = False
             out.append(f'<p style="margin:3px 0">{_inline(line)}</p>')
     _close_lists(out, state)
     return '\n'.join(out)

@@ -83,6 +83,18 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   to `"unassigned"` are filtered out of both Yours and Owed-to-you (kept in
   the ledger for audit; suppressed from the rendered digest).
 
+### Fixed
+
+- **Digest numbering resets across items in the rendered email.** The
+  `md_to_html` renderer closed the `<ol>` on every indented continuation line
+  (e.g. `*Next: …*`) and every blank line inside a list, so each numbered
+  item with a continuation — and every Nudge draft, which has blank lines
+  between header and body — became its own `<ol>` starting at 1. Reply
+  keywords like `done: 3` therefore couldn't reliably target an item.
+  Indented non-list lines now fold into the preceding `<li>` with a `<br>`
+  separator, and blank lines inside a list defer the close until a heading
+  or unindented prose is reached.
+
 ## [0.2.0] — 2026-05-19
 
 ### Added
