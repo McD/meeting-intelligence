@@ -429,9 +429,10 @@ If no qualifying meetings exist, say so and stop.
 For each qualifying meeting that proceeds to Step 2, establish these shell variables once at the end of Step 1 so they are reachable from Step 3 (audit log), Step 4 (ledger append), and beyond — single source of truth, no recomputation downstream:
 
 - **`SOURCE_MEETING`** — the meeting slug in the form `YYYY-MM-DD-HHmm-<kebab-slug>` derived from the event start time and a kebab-cased compression of the event summary. This is the same slug used for the dedup check above (`YYYY-MM-DD-HHmm-followup-SLUG.md` is `${SOURCE_MEETING}` with `-followup-` inserted). Step 4's append heredoc and Step 3's audit log both consume this variable.
+- **`MEETING_TITLE`** — the raw calendar event `summary` (e.g. `"AI Proposal Review (Data Tools)"`), preserved as-is for display. Step 4's append heredoc writes it onto every ledger item as `meeting_title`, which `/digest` uses verbatim when rendering `<meeting name>` in the actions tracker. Without this field, `/digest` falls back to slugifying `source_meeting` via `briefings_mcp.format.pretty_meeting_title`, which is readable but lossy (slashes, parentheses, casing all collapse). Strip any meeting-class tags (`[coaching]`, `[debrief]`, `[capture-actions]`, etc.) from the title before exporting — those drive `COACHING_MODE` and aren't display-worthy.
 - **`COACHING_MODE`** — read the calendar event title (the event's `summary` field as returned by `gws calendar events list`). Parse it for any of these meeting-class tags, case-insensitive, substring-based (`[Coaching]`, `[ coaching ]`, and `[coaching]` all match): `[coaching]`, `[debrief]`, `[1:1-introspective]`, `[therapy]`. If any matches, AND `[capture-actions]` is **not** also present in the title, set `COACHING_MODE=1`. Otherwise set `COACHING_MODE=0`. The `[capture-actions]` override beats the meeting-class tag — it lets the user keep one real action surfaced from an otherwise coaching-shaped meeting.
 
-These variables are per-meeting; if multiple qualifying meetings exist, derive a fresh `SOURCE_MEETING` and `COACHING_MODE` for each before processing it through Steps 2-6.
+These variables are per-meeting; if multiple qualifying meetings exist, derive a fresh `SOURCE_MEETING`, `MEETING_TITLE`, and `COACHING_MODE` for each before processing it through Steps 2-6.
 
 ---
 
@@ -600,6 +601,7 @@ Build the items list and append in one Python invocation. `SOURCE_MEETING` was e
 
 ```bash
 APPEND_OUT=$(SOURCE_MEETING="$SOURCE_MEETING" \
+             MEETING_TITLE="$MEETING_TITLE" \
              COACHING_MODE="$COACHING_MODE" \
              ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
              ITEMS_JSON='[
@@ -617,6 +619,7 @@ from briefings_mcp import ledger
 from briefings_mcp.ledger import _restricted_umask
 
 source_meeting = os.environ["SOURCE_MEETING"]
+meeting_title  = os.environ.get("MEETING_TITLE", "")
 attendees      = json.loads(os.environ["ATTENDEES_JSON"])
 items          = json.loads(os.environ["ITEMS_JSON"])
 candidates     = json.loads(os.environ.get("CANDIDATES_JSON", "[]"))
@@ -670,6 +673,7 @@ for item in items:
     item.setdefault("created_at", now_iso)
     item.setdefault("attendees", attendees)
     item.setdefault("source_meeting", source_meeting)
+    item.setdefault("meeting_title", meeting_title)
     item.setdefault("topics", [])
     # why/why_notes kept as empty-string defaults — schema fields preserved for
     # ledger entries written before Phase 2 removed the capture loop.

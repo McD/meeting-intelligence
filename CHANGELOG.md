@@ -94,6 +94,16 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   Indented non-list lines now fold into the preceding `<li>` with a `<br>`
   separator, and blank lines inside a list defer the close until a heading
   or unindented prose is reached.
+- **Digest meeting names render cleanly from `meeting_title`.** Commitments
+  now persist the calendar event's original `summary` (e.g.
+  `"AI Proposal Review (Data Tools)"`, `"1:1 Mark / Cedric"`) as
+  `meeting_title` on the ledger entry. `/digest` uses this verbatim when
+  rendering the `<meeting name>` slot, instead of slugifying or relying on
+  LLM judgement to invert the slug back into a readable title. A new
+  `briefings_mcp.format.pretty_meeting_title` helper handles the fallback for
+  legacy entries written before `meeting_title` was captured — strips the
+  date prefix, converts kebab to spaces, restores common acronyms (`AI`,
+  `SC`, `McD`, `ScreenCloud`), and folds `1 1` into `1:1`.
 
 ## [0.2.0] — 2026-05-19
 

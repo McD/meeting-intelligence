@@ -132,6 +132,7 @@ for entry in ledger.iter_entries():
         "owner": owner,
         "due": entry.get("due"),
         "source_meeting": entry.get("source_meeting", ""),
+        "meeting_title": entry.get("meeting_title", ""),
         "attendees": attendees,
         "created_at": created,
         "age_days": age_days,
@@ -336,6 +337,8 @@ PYEOF
 **Numbering**: each section's numbering is independent. `done: 1` always means "Yours #1", `send: 2` always means "Nudge drafts #2". The footer's example numbers should match the actual content where possible (e.g. don't say `drop: 4` if Yours has only 3 items).
 
 The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N days, due DD Mon)*` if due is set. If the due date is in the past, use `*(open N days, OVERDUE since DD Mon)*` to call it out.
+
+**`<meeting name>` rendering**. Use the record's `meeting_title` verbatim when it is non-empty — that is the calendar event's original title (`AI Proposal Review (Data Tools)`, `1:1 Mark / Cedric`) preserved by `/follow-up`. When `meeting_title` is empty (legacy entries written before that field was captured), fall back to `briefings_mcp.format.pretty_meeting_title(source_meeting)`, which strips the date prefix and converts the kebab slug into a readable title with common acronyms (AI, SC, McD, ScreenCloud) restored. Do not feed the raw `source_meeting` slug into the rendered digest.
 
 **`done?` rendering**: prepend `*done?*` *after* the number and dot, before the parenthesized age. Renders as: `2. *done?* *(open 5 days)* Draft 5-page state-of-industry document — Q3 Planning, 20 May`. The same rendering applies to both Yours items (where `done_hint` came from Gmail or Slack matches for the user) and Owed items (where `done_hint` came from Slack matches for the owner).
 
