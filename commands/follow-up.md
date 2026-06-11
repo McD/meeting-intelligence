@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Previous: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-06-11 — Step 1 gains a real-meeting filter: skip events with no co-attendees, declined invites, and non-`default` eventTypes (workingLocation, outOfOffice, focusTime, birthday). Closes the bug where recurring solo blocks like `Lunch` fired daily transcript-request emails. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Earlier: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -415,9 +415,32 @@ Detect the system's local timezone:
 TZ=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
 ```
 
-Get today's calendar events and find meetings that **both**:
+Get today's calendar events and find meetings to follow up on. Qualifying meetings must satisfy **all** of these:
 - End time is in the past (i.e. `end_time < now`) — do not process meetings that are still in progress or haven't started yet
 - Ended any time in the last 2 days (not just today — this catches meetings that fell through if the scheduler was down overnight or had auth issues)
+- **Looks like a real meeting, not a personal calendar block.** Apply this check against the raw event JSON (assume `EVENT_JSON` holds one event from `gws calendar events list`). All four conditions must be true; if any fails, skip the event silently (no log, no awaiting file, no transcript request):
+
+  ```bash
+  # 1) eventType must be the default ("default"). Skip workingLocation, outOfOffice, focusTime, birthday, etc.
+  EVENT_TYPE=$(echo "$EVENT_JSON" | jq -r '.eventType // "default"')
+  [ "$EVENT_TYPE" = "default" ] || continue
+
+  # 2) Must have at least one attendee whose email is not $MY_EMAIL.
+  #    An empty/missing attendees array means it's a solo block (Lunch, Focus time, gym hold, etc.).
+  OTHER_ATTENDEES=$(echo "$EVENT_JSON" | jq --arg me "$MY_EMAIL" '[.attendees[]? | select(.email != $me)] | length')
+  [ "${OTHER_ATTENDEES:-0}" -ge 1 ] || continue
+
+  # 3) The user's own responseStatus must not be "declined".
+  USER_DECLINED=$(echo "$EVENT_JSON" | jq -r --arg me "$MY_EMAIL" '[.attendees[]? | select(.email == $me) | .responseStatus] | .[0] // "accepted"')
+  [ "$USER_DECLINED" != "declined" ] || continue
+
+  # 4) Must have a dateTime start (not just a date) — all-day events are calendar holds, not meetings.
+  HAS_TIMED_START=$(echo "$EVENT_JSON" | jq -r '.start.dateTime // empty')
+  [ -n "$HAS_TIMED_START" ] || continue
+  ```
+
+  This excludes recurring solo blocks (e.g. `Lunch`, `Focus time`, `Gym`), declined invites, all-day events, and working-location/out-of-office entries — none of which can produce a transcript or a follow-up.
+
 - **Do NOT already have a follow-up or awaiting file** — before processing any meeting, run this exact check and skip it immediately if either file exists:
 
 ```bash
