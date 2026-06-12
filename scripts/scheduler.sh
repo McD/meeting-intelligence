@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Previous: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -25,33 +25,48 @@ GWS=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
 # process group cleanly, including grandchildren. Exit code 124 on timeout
 # preserves the existing "rc==124 means timeout" convention used below.
 #
-# Wall-clock semantics (not gtimeout's awake-time) — see version comment
-# above for the trade-off. /usr/bin/python3 is part of macOS Xcode Command
-# Line Tools; install.sh's Step 3 (Claude Code) already requires brew which
-# requires xcode-select, so python3 is present on every supported install.
+# Wall-clock semantics — the deadline uses time.time() (gettimeofday), which
+# continues advancing during system sleep. A single subprocess.wait(timeout=...)
+# call would NOT give wall-clock semantics: Python's wait() uses time.monotonic()
+# internally, which on macOS resolves to mach_absolute_time() and pauses during
+# sleep. So we poll wait() in ≤10s bursts and re-check the deadline each
+# iteration; on wake-up from sleep, the next iteration sees the deadline is past
+# and kills the child within ~10s. /usr/bin/python3 is part of macOS Xcode
+# Command Line Tools; install.sh's Step 3 (Claude Code) already requires brew
+# which requires xcode-select, so python3 is present on every supported install.
 run_with_watchdog() {
     local timeout=$1
     shift
     /usr/bin/python3 - "$timeout" "$@" <<'PYEOF'
-import subprocess, signal, sys, os
+import subprocess, signal, sys, os, time
 timeout = int(sys.argv[1])
 cmd = sys.argv[2:]
 p = subprocess.Popen(cmd, start_new_session=True)
-try:
-    rc = p.wait(timeout=timeout)
-    sys.exit(rc)
-except subprocess.TimeoutExpired:
+deadline = time.time() + timeout
+
+def kill_group():
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
         p.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
-    except ProcessLookupError:
-        pass
-    sys.exit(124)
+
+while True:
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        kill_group()
+        sys.exit(124)
+    try:
+        rc = p.wait(timeout=min(remaining, 10))
+        sys.exit(rc)
+    except subprocess.TimeoutExpired:
+        continue
 PYEOF
 }
 
