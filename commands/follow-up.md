@@ -25,6 +25,12 @@ Delivery scope: only ever send email output to `$MY_EMAIL` or to attendees liste
 ## Rules
 - **Never use osascript, AppleScript, or Apple Mail.app** — use `gws` tools only for email and calendar access
 - **Never use osascript to access Calendar** — use the Google Calendar MCP instead
+- **Never run `find` against `/` (or any other root path)** — full-filesystem scans hit Time Machine, iCloud Drive, and external volumes and can take 15+ minutes from inside Bash, blowing the scheduler's watchdog and posting needless Slack alerts. Search from a specific subtree. Canonical paths you should never need to discover at runtime:
+  - State files (awaiting/follow-up/digest/audit): `~/Briefings/`
+  - Ledger MCP source: `~/.briefings/briefings_mcp/` (repo mirror at `~/Sites/meeting-intelligence/briefings_mcp/`)
+  - Python interpreter for ledger imports: `~/.briefings/venv/bin/python3`
+  - Config: `~/.briefings_config`
+  - This command file: `~/.claude/commands/follow-up.md`
 
 ## Routing
 

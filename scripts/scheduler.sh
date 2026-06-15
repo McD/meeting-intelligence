@@ -147,6 +147,25 @@ notify_slack() {
         -d "$payload" >/dev/null 2>&1 || true
 }
 
+# Cause-class deduped Slack notification. First failure of a kind pings; repeats
+# of the same kind within NOTIFY_DEDUP_WINDOW are suppressed (logged only). Markers
+# are cleared on a successful claude cycle so the next failure re-pings. Added
+# 2026-06-15 after a 48h opus-4-7 LLM-stall window produced ~39 :hourglass: pings.
+NOTIFY_DEDUP_WINDOW=14400  # 4h
+notify_slack_once() {
+    local key="$1" msg="$2"
+    local marker="$BRIEFING_DIR/.notify_dedup_${key}"
+    if [ -f "$marker" ]; then
+        local age=$(( $(date +%s) - $(stat -f %m "$marker") ))
+        if [ "$age" -lt "$NOTIFY_DEDUP_WINDOW" ]; then
+            log "Slack ping suppressed (key=$key, last fired ${age}s ago, window ${NOTIFY_DEDUP_WINDOW}s)."
+            return 0
+        fi
+    fi
+    touch "$marker"
+    notify_slack "$msg"
+}
+
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
     tail -500 "$BRIEFING_DIR/scheduler.log" > "$BRIEFING_DIR/scheduler.log.tmp"
     mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
@@ -255,12 +274,13 @@ CAL_EVENTS=$("$GWS" calendar events list --params "{\"calendarId\":\"primary\",\
 if echo "$CAL_EVENTS" | grep -q "invalid_grant\|Token has been expired or revoked\|OAuth token has expired"; then
     log "ERROR: gws auth check failed — token needs refresh."
     touch "$GWS_AUTH_FAILED_FILE"
-    notify_slack ":key: Briefings paused — gws OAuth token expired. Run \`gws auth login\` in your terminal to re-authenticate."
+    notify_slack_once gws-oauth ":key: Briefings paused — gws OAuth token expired. Run \`gws auth login\` in your terminal to re-authenticate."
     exit 1
 fi
 
 if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
     rm -f "$GWS_AUTH_FAILED_FILE"
+    rm -f "$BRIEFING_DIR/.notify_dedup_gws-oauth"
     notify_slack ":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully."
 fi
 
@@ -386,14 +406,16 @@ if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" 
     exit 0
 fi
 
-# Bounded Claude invocation. 1200s = 20 min covers the slowest observed cycles with
-# real safety margin. Wall-clock timer (the bash-native run_with_watchdog above);
-# the laptop sleeping mid-cycle is rare for a 15-min cadence with 20-min ceiling, and
-# the lockfile cleans up any cycle that gets killed by the watchdog. Tighter caps
-# (was 600s briefly) false-positive on healthy but-slow /follow-up sweeps that send
-# a transcript request mid-cycle. On timeout (exit 124) the lock is released by the
+# Bounded Claude invocation. 600s = 10 min — 2.5× p99 of healthy /follow-up runtime
+# (p50 180s, p75 240s, p95 ~310s post-2026-06-12 wall-clock rewrite). Lowered from
+# 1200s on 2026-06-15 after a 48h opus-4-7 stall window: cycles took 16-26 min between
+# LLM turns, ran out the 1200s budget anyway, and fired one :hourglass: per cycle.
+# Tighter cap kills stalls faster so the next launchd tick can retry on a fresh
+# (hopefully recovered) LLM, and notify_slack_once dedup bounds the noise. Of 448
+# historical cycles only 1 post-rewrite cycle finished between 600-1200s (06-15 01:30
+# during the same stall window). On timeout (exit 124) the lock is released by the
 # EXIT trap and the next launchd tick takes over.
-CLAUDE_TIMEOUT_SECONDS=1200
+CLAUDE_TIMEOUT_SECONDS=600
 
 # Transient Anthropic SDK errors. Most overnight occurrences happen during macOS
 # dark-wake transitions where the network briefly drops mid-request. Retry once
@@ -424,19 +446,19 @@ run_claude() {
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
     if [ "$rc" -eq 124 ]; then
         log "ERROR: $label timed out after ${t}s (Claude killed)."
-        notify_slack ":hourglass: Briefings stalled — Claude Code did not return within ${t}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
+        notify_slack_once timeout ":hourglass: Briefings stalled — Claude Code did not return within ${t}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
     elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
         log "ERROR: $label hit transient API errors on both attempts."
-        notify_slack ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
+        notify_slack_once api-error ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
     elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
         log "ERROR: $label auth failure."
-        notify_slack ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
+        notify_slack_once claude-oauth ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
     elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
         log "ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give."
-        notify_slack ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
+        notify_slack_once permission ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
     elif [ "$rc" -ne 0 ]; then
         log "ERROR: $label exited with non-zero status ($rc)."
-        notify_slack ":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage."
+        notify_slack_once generic ":warning: $label failed at $(date '+%Y-%m-%d %H:%M'). Check ~/Briefings/scheduler.log — common causes: Claude Code permission prompt after an update, or transient Claude/network outage."
     fi
     return "$rc"
 }
@@ -463,6 +485,9 @@ fi
 # the version-change Slack alert at the top of the script re-fires on the next cycle.
 if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
     echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
+    # Reset notify_slack_once dedup markers so the next failure re-pings instead of
+    # being suppressed by a stale marker from an earlier failure window.
+    rm -f "$BRIEFING_DIR"/.notify_dedup_*
 fi
 
 log "Done."
