@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-06-26 — run_with_watchdog now distinguishes host-sleep-induced deadline expiry from real stalls. Each poll iteration measures (actual wall duration) vs (wait_budget); excesses beyond a 30s jitter allowance are attributed to host sleep. On deadline expiry, if >50% of the timeout was sleep, exit 125 (skip, no Slack) instead of 124 (real timeout, Slack ping). Also raised CLAUDE_TIMEOUT_SECONDS 600→900 since legitimate briefing+follow-up cycles routinely landed 420-600s against the prior cap. Together these address the 30-timeouts-in-40h flood the user surfaced on 2026-06-26: the overnight cluster (06-25 19:19 → 06-26 08:50, 13 consecutive) was the laptop sleeping, and the daytime ones had no headroom. Previous: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -42,7 +42,20 @@ import subprocess, signal, sys, os, time
 timeout = int(sys.argv[1])
 cmd = sys.argv[2:]
 p = subprocess.Popen(cmd, start_new_session=True)
-deadline = time.time() + timeout
+start_wall = time.time()
+deadline = start_wall + timeout
+
+# Sleep accounting. p.wait(timeout=...) uses Python's monotonic clock, which on
+# macOS pauses during system sleep. So a 10s wait spans laptop-sleep cleanly,
+# but the wall-clock deadline (time.time()) keeps advancing through sleep. If
+# the host sleeps for an hour mid-cycle, the next iteration sees the deadline
+# is past and kills a child that has only had a few minutes of awake-time —
+# which used to fire a :hourglass: Slack alert as if Claude had stalled. We
+# now measure the gap between each iteration's requested wait budget and the
+# actual wall-clock duration of that wait; large gaps are attributed to host
+# sleep. On timeout, if a majority of the budget was sleep, exit 125 instead
+# of 124 so the caller can log a skip without notifying Slack.
+sleep_jumps = 0.0
 
 def kill_group():
     try:
@@ -58,14 +71,23 @@ def kill_group():
             pass
 
 while True:
-    remaining = deadline - time.time()
+    iter_start = time.time()
+    remaining = deadline - iter_start
     if remaining <= 0:
         kill_group()
-        sys.exit(124)
+        sys.exit(125 if sleep_jumps > timeout * 0.5 else 124)
     try:
-        rc = p.wait(timeout=min(remaining, 10))
+        wait_budget = min(remaining, 10)
+        rc = p.wait(timeout=wait_budget)
         sys.exit(rc)
     except subprocess.TimeoutExpired:
+        # 30s jitter allowance covers normal OS scheduling. Anything beyond
+        # that on a 10s wait is the laptop sleeping (or a wedged CPU, which
+        # we can't distinguish — but the failure mode of misattributing a
+        # wedge as sleep is "one fewer Slack ping", not data loss).
+        actual = time.time() - iter_start
+        if actual > wait_budget + 30:
+            sleep_jumps += actual - wait_budget
         continue
 PYEOF
 }
@@ -406,16 +428,17 @@ if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" 
     exit 0
 fi
 
-# Bounded Claude invocation. 600s = 10 min — 2.5× p99 of healthy /follow-up runtime
-# (p50 180s, p75 240s, p95 ~310s post-2026-06-12 wall-clock rewrite). Lowered from
-# 1200s on 2026-06-15 after a 48h opus-4-7 stall window: cycles took 16-26 min between
-# LLM turns, ran out the 1200s budget anyway, and fired one :hourglass: per cycle.
-# Tighter cap kills stalls faster so the next launchd tick can retry on a fresh
-# (hopefully recovered) LLM, and notify_slack_once dedup bounds the noise. Of 448
-# historical cycles only 1 post-rewrite cycle finished between 600-1200s (06-15 01:30
-# during the same stall window). On timeout (exit 124) the lock is released by the
-# EXIT trap and the next launchd tick takes over.
-CLAUDE_TIMEOUT_SECONDS=600
+# Bounded Claude invocation. 900s = 15 min. Raised from 600s on 2026-06-26 after a
+# 40h sample showed legitimate briefing+follow-up cycles routinely landing 420-600s,
+# leaving zero headroom against the previous 600s cap and producing a steady ~15
+# false-positive :hourglass: pings per day. 900s tracks the p99 of awake-time
+# /follow-up runtime with headroom for the combined briefing+follow-up case;
+# overnight stalls are now handled separately by the watchdog's rc==125 sleep-skip
+# branch, so the cap no longer needs to absorb sleep gaps. Previous 600s rationale
+# from 2026-06-15 (kill faster so the next launchd tick retries on a fresh LLM)
+# still applies — 900s preserves that within one 15-min cycle. On timeout (exit 124)
+# the lock is released by the EXIT trap and the next launchd tick takes over.
+CLAUDE_TIMEOUT_SECONDS=900
 
 # Transient Anthropic SDK errors. Most overnight occurrences happen during macOS
 # dark-wake transitions where the network briefly drops mid-request. Retry once
@@ -447,6 +470,11 @@ run_claude() {
     if [ "$rc" -eq 124 ]; then
         log "ERROR: $label timed out after ${t}s (Claude killed)."
         notify_slack_once timeout ":hourglass: Briefings stalled — Claude Code did not return within ${t}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
+    elif [ "$rc" -eq 125 ]; then
+        # Watchdog deadline elapsed but >50% of the budget was attributed to host sleep.
+        # No real stall — the laptop slept through the cycle. Log it, but do not Slack:
+        # the next launchd tick on wake will retry naturally.
+        log "INFO: $label skipped (host-sleep majority of ${t}s budget — no Slack ping)."
     elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
         log "ERROR: $label hit transient API errors on both attempts."
         notify_slack_once api-error ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
