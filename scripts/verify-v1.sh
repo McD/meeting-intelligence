@@ -60,7 +60,12 @@ for arg in "$@"; do
 done
 
 VENV_DIR="$HOME/.briefings/venv"
-RUNTIME_PY="$VENV_DIR/bin/python"
+# python3 specifically — matches what scheduler.sh's preflight actually
+# invokes. bin/python and bin/python3 are usually both symlinks to the same
+# interpreter but can diverge (partial rebuild, manual patching); this and
+# scheduler.sh must key off the same file so both surfaces agree about
+# whether the venv is broken.
+RUNTIME_PY="$VENV_DIR/bin/python3"
 DEV_PY="$SCRIPT_DIR/.venv/bin/python"
 CLAUDE_BIN="$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")"
 
@@ -106,8 +111,30 @@ section "2. Runtime venv and package import"
 if [ -x "$RUNTIME_PY" ]; then
     py_version=$("$RUNTIME_PY" --version 2>&1)
     pass "Runtime venv exists at $VENV_DIR ($py_version)"
+elif [ -L "$RUNTIME_PY" ]; then
+    # Symlink exists but -x resolved false → the target is unreachable. Three
+    # sub-cases with distinct recovery — don't blanket-recommend a destructive
+    # rebuild:
+    #   1. Target missing entirely → venv rebuild needed (Homebrew keg pruned).
+    #   2. Target exists but not executable → chmod, not rebuild.
+    #   3. Target unresolvable → generic fallback pointing at install.sh.
+    # Uses /usr/bin/python3's os.path.realpath instead of `readlink -f` because
+    # the -f flag is a GNU extension; BSD readlink pre-macOS 12.3 rejects it,
+    # and the diff should work for any teammate cloning this repo.
+    # All paths in printed recovery commands are single-quoted so a user
+    # pasting on a machine with a space in $HOME (e.g. "/Users/Mark Mc") gets
+    # a syntactically-safe `rm -rf` (unquoted, this would word-split and could
+    # delete large portions of the home directory).
+    target=$(/usr/bin/python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$RUNTIME_PY" 2>/dev/null || echo "")
+    if [ -n "$target" ] && [ ! -e "$target" ]; then
+        fail "Runtime venv broken (interpreter gone)" "'$RUNTIME_PY' resolves to '$target' which no longer exists — venv Python interpreter is gone (Homebrew upgrade?). Rebuild: brew install python@3.13 && rm -rf '$VENV_DIR' && '/opt/homebrew/opt/python@3.13/bin/python3.13' -m venv '$VENV_DIR' && '$VENV_DIR/bin/pip' install -e '$SCRIPT_DIR'"
+    elif [ -n "$target" ] && [ ! -x "$target" ]; then
+        fail "Runtime venv broken (interpreter not executable)" "'$RUNTIME_PY' resolves to '$target' which exists but is not executable. Try 'chmod +x $target' before rebuilding the venv — a chmod is cheaper than a full rebuild."
+    else
+        fail "Runtime venv broken" "'$RUNTIME_PY' symlink cannot be resolved. Run install.sh to rebuild."
+    fi
 else
-    fail "Runtime venv" "$RUNTIME_PY missing — run install.sh"
+    fail "Runtime venv missing" "'$RUNTIME_PY' not found — run install.sh"
 fi
 
 if [ -x "$RUNTIME_PY" ]; then

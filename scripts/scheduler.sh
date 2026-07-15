@@ -205,6 +205,56 @@ echo $$ > "$LOCK_FILE"
 # Single quotes: $LOCK_FILE expands at trap-firing time, not trap-definition.
 trap 'rm -f "$LOCK_FILE"' EXIT
 
+# ── Venv preflight ─────────────────────────────────────────────────────────
+# Catch a broken ~/.briefings/venv every cycle (import is ~50ms), not just on
+# the weekly branch. Without this, a Homebrew Python upgrade that orphans the
+# venv's python3 symlink stays invisible for up to a week until auto-expiry
+# fails (silent for 2 weeks in the 2026-07-15 incident before this preflight
+# was added). Design notes:
+#   * Wrapped in run_with_watchdog 15 so a module-level side-effect in
+#     briefings_mcp (sqlite connect against a locked DB, DNS lookup) can't
+#     freeze the scheduler indefinitely — 15s is 300x the normal import time.
+#   * PREFLIGHT_STDERR uses a PID-scoped file in $BRIEFING_DIR rather than
+#     mktemp, so an unwritable TMPDIR can't false-alarm the check itself.
+#   * PREFLIGHT_FAILED signal is consumed by the weekly-branch failure alert
+#     below to avoid a duplicate Slack ping when both fire on the same
+#     Monday cycle for the same root cause.
+#   * The venv-broken marker is preserved through the post-Claude cleanup
+#     sweep at the end of this script (a successful `claude -p` run doesn't
+#     imply the venv is fixed — briefings use claude -p directly, NOT the
+#     venv Python — so clearing venv-broken there would refire every cycle
+#     and flood Slack; see 2026-06-15 incident, 39 pings/48h). Recovery is
+#     signaled by a clean preflight (elif branch below).
+#   * Full stderr goes to scheduler.log line-by-line so tracebacks aren't
+#     truncated at 300 chars; Slack alert gets the first 300 chars as a
+#     snippet plus a "see scheduler.log for full" pointer.
+PREFLIGHT_FAILED=0
+PREFLIGHT_STDERR="$BRIEFING_DIR/.preflight_stderr.$$"
+if ! run_with_watchdog 15 ~/.briefings/venv/bin/python3 -c "import briefings_mcp" 2>"$PREFLIGHT_STDERR"; then
+    PREFLIGHT_FAILED=1
+    log "ERROR: venv preflight failed — ~/.briefings/venv/bin/python3 cannot import briefings_mcp. Full stderr follows:"
+    if [ -s "$PREFLIGHT_STDERR" ]; then
+        while IFS= read -r stderr_line; do
+            log "  stderr | $stderr_line"
+        done < "$PREFLIGHT_STDERR"
+        err_snippet=$(tr '\n' ' ' < "$PREFLIGHT_STDERR" | cut -c1-300)
+    else
+        log "  stderr | <empty — likely missing interpreter or venv not created>"
+        err_snippet="<empty — likely missing interpreter or venv not created>"
+    fi
+    notify_slack_once venv-broken ":broken_heart: Briefings runtime venv is broken — \`~/.briefings/venv/bin/python3 -c 'import briefings_mcp'\` fails. Impact: weekly auto-expiry, digest (Mon/Thu 10am), and the MCP server ALL use the venv. Briefings and follow-ups still run (they invoke \`claude -p\` directly). Full stderr in \`~/Briefings/scheduler.log\`; snippet: \`${err_snippet}\`. Recovery: \`brew install python@3.13 && rm -rf ~/.briefings/venv && /opt/homebrew/opt/python@3.13/bin/python3.13 -m venv ~/.briefings/venv && ~/.briefings/venv/bin/pip install -e <your meeting-intelligence clone>\`."
+elif [ -f "$BRIEFING_DIR/.notify_dedup_venv-broken" ]; then
+    # Preflight passed AND we had previously alerted about a broken venv →
+    # the fix stuck. Clear the persistent marker and send a healthy-again
+    # ping so the user knows things resumed (silent recovery erodes trust
+    # in the original alert). No dedup on the recovery ping — it fires at
+    # most once per broken/fixed cycle.
+    rm -f "$BRIEFING_DIR/.notify_dedup_venv-broken"
+    log "Venv preflight recovered — briefings_mcp imports OK; clearing venv-broken dedup marker."
+    notify_slack ":sparkles: Briefings venv is healthy again — weekly auto-expiry, digest, and MCP will resume on schedule."
+fi
+rm -f "$PREFLIGHT_STDERR"
+
 # Monday, once per day — keep ~/Briefings/ from growing unbounded and send the
 # weekly health summary to Slack. Sentinel file prevents multi-fire on every
 # cycle before 09:00 (the old `< 09:16` window ran up to 38 times per Monday).
@@ -220,13 +270,33 @@ if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL"
     # Rule: no-due-date items open >30 days, OR any item open >60 days.
     # These are almost always done-and-forgotten or abandoned; keeping them
     # floods the digest and erodes trust in what surfaces there.
-    EXPIRED_JSON=$(~/.briefings/venv/bin/python3 <<'PYEOF'
+    #
+    # Two-pass Python design: pass 1 identifies drop candidates without any
+    # mutations (schema drift / KeyError here leaves the ledger untouched);
+    # pass 2 mutates atomically-per-entry (ledger.py:189-196 tmp+rename) and
+    # catches its own exceptions to print the partial `dropped` list on
+    # crash. The shell reads EXPIRED_JSON regardless of rc, so :broom-notify
+    # fires with an accurate count even after a partial-mutation crash — the
+    # user needs to know which items were pruned, not just that "something
+    # failed" (2026-07-15 review: the old code claimed 'ledger not modified'
+    # after mid-loop failures, which was false for entries dropped before
+    # the crash).
+    #
+    # Stderr goes to a PID-scoped file in $BRIEFING_DIR (not mktemp) so a
+    # TMPDIR issue can't make the block itself false-alarm. Full stderr is
+    # logged line-by-line so tracebacks aren't truncated at 300 chars.
+    EXPIRED_STDERR="$BRIEFING_DIR/.expiry_stderr.$$"
+    EXPIRED_JSON=$(~/.briefings/venv/bin/python3 2>"$EXPIRED_STDERR" <<'PYEOF'
 import json
+import sys
 from datetime import datetime, timezone
 from briefings_mcp import ledger
 
 now = datetime.now(timezone.utc)
-dropped = []
+
+# Pass 1: identify drop candidates. Failures here happen before any mutation,
+# so a crash leaves the ledger unmodified.
+to_drop = []
 for entry in ledger.iter_entries():
     if entry.get("type") != "commitment" or entry.get("state") not in ("open", "in-flight"):
         continue
@@ -238,23 +308,65 @@ for entry in ledger.iter_entries():
         age_days = 0
     due = entry.get("due")
     if (not due and age_days > 30) or age_days > 60:
-        ledger.update_commitment_state(entry["id"], "dropped")
-        dropped.append(entry.get("summary", "")[:80])
+        to_drop.append((entry["id"], entry.get("summary", "")[:80]))
+
+# Pass 2: mutate. On crash, print the partial list so the caller can still
+# :broom-notify with an accurate count of what was persisted before failure.
+dropped = []
+try:
+    for entry_id, summary in to_drop:
+        ledger.update_commitment_state(entry_id, "dropped")
+        dropped.append(summary)
+except Exception as e:
+    print(json.dumps(dropped))
+    print(f"partial-crash after {len(dropped)}/{len(to_drop)} drops: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
 
 print(json.dumps(dropped))
 PYEOF
     )
     EXPIRY_RC=$?
-    if [ "$EXPIRY_RC" -ne 0 ]; then
-        log "ERROR: auto-expiry Python block failed (rc=$EXPIRY_RC) — ledger not modified."
-    fi
+
+    # Parse count regardless of rc — Python prints partial state on crash.
+    # `|| echo 0` guards against a totally empty EXPIRED_JSON (e.g. Python
+    # never started because the venv is missing).
     EXPIRED_COUNT=$(/usr/bin/python3 -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$EXPIRED_JSON" 2>/dev/null || echo 0)
-    if [ "$EXPIRED_COUNT" -gt 0 ]; then
+
+    if [ "$EXPIRY_RC" -ne 0 ]; then
+        log "ERROR: auto-expiry Python block failed (rc=$EXPIRY_RC) — ledger may be partially modified ($EXPIRED_COUNT drops persisted before crash). Full stderr follows:"
+        if [ -s "$EXPIRED_STDERR" ]; then
+            while IFS= read -r stderr_line; do
+                log "  stderr | $stderr_line"
+            done < "$EXPIRED_STDERR"
+        else
+            log "  stderr | <empty>"
+        fi
+
+        # :broom fires even on partial success — user needs to know what was
+        # pruned so they can spot a legitimate drop that later looks like a
+        # digest bug. Wording explicitly flags the partial-modification state.
+        if [ "$EXPIRED_COUNT" -gt 0 ]; then
+            notify_slack ":broom: Auto-pruned $EXPIRED_COUNT stale commitments BEFORE the auto-expiry Python block crashed (rc=$EXPIRY_RC). Ledger is partially modified. Check \`~/.briefings/decisions.jsonl\` state=dropped near this timestamp if you need to recover one."
+        fi
+
+        # Suppress the venv-broken-adjacent alert if the preflight already
+        # fired this cycle — same root cause, avoids duplicate ping. Uses a
+        # distinct dedup key so a genuine auto-expiry-only failure (e.g.
+        # ledger schema drift with a healthy venv) still surfaces even when
+        # a 4h-old venv-broken marker is on disk.
+        if [ "$PREFLIGHT_FAILED" = "0" ]; then
+            notify_slack_once auto-expiry-failed ":warning: Weekly auto-expiry crashed (rc=$EXPIRY_RC) — $EXPIRED_COUNT drops persisted before crash, ledger partially modified. Check \`~/Briefings/scheduler.log\` for full stderr. If venv is broken: \`brew install python@3.13 && rm -rf ~/.briefings/venv && /opt/homebrew/opt/python@3.13/bin/python3.13 -m venv ~/.briefings/venv && ~/.briefings/venv/bin/pip install -e <your meeting-intelligence clone>\`."
+        else
+            log "auto-expiry-failed notification suppressed — preflight already alerted this cycle (same root cause)."
+        fi
+    elif [ "$EXPIRED_COUNT" -gt 0 ]; then
         log "Auto-expired $EXPIRED_COUNT stale commitments from ledger."
         notify_slack ":broom: Auto-pruned $EXPIRED_COUNT stale commitments (no-due items open >30 days, or any item >60 days). Check \`~/.briefings/decisions.jsonl\` state=dropped if you need to recover one."
     else
         log "Auto-expiry: no stale commitments found."
     fi
+
+    rm -f "$EXPIRED_STDERR"
 
     generate_health_summary
     date +%Y-%m-%d > "$WEEKLY_SENTINEL"
@@ -513,9 +625,23 @@ fi
 # the version-change Slack alert at the top of the script re-fires on the next cycle.
 if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
     echo "$CURRENT_CLAUDE_VERSION" > "$CLAUDE_VERSION_FILE"
-    # Reset notify_slack_once dedup markers so the next failure re-pings instead of
-    # being suppressed by a stale marker from an earlier failure window.
-    rm -f "$BRIEFING_DIR"/.notify_dedup_*
+    # Reset notify_slack_once dedup markers so the next failure re-pings
+    # instead of being suppressed by a stale marker from an earlier failure
+    # window. EXCEPT: markers whose cause is orthogonal to Claude running.
+    # A successful `claude -p` doesn't imply the venv is fixed (briefings
+    # use claude -p directly, NOT the venv Python), so clearing venv-broken
+    # here would refire on every subsequent cycle — reproducing the
+    # 2026-06-15 39-pings-in-48h flood pattern. auto-expiry-failed is
+    # likewise weekly-branch-only and cleared by its own next occurrence.
+    # These markers are cleared by their own recovery paths (see venv
+    # preflight recovery branch near the top of this script).
+    for marker in "$BRIEFING_DIR"/.notify_dedup_*; do
+        [ -e "$marker" ] || continue
+        case "$(basename "$marker")" in
+            .notify_dedup_venv-broken|.notify_dedup_auto-expiry-failed) continue ;;
+            *) rm -f "$marker" ;;
+        esac
+    done
 fi
 
 log "Done."
