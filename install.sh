@@ -32,7 +32,7 @@ echo "Setup takes about 15 minutes. You'll be asked a few questions."
 echo ""
 echo "Prerequisites:"
 echo "  - macOS (Apple Silicon or Intel)"
-echo "  - A Claude Max subscription (for unattended scheduler runs)"
+echo "  - A paid Claude Code account (Pro, Max, Team, or Enterprise)"
 echo "  - A Google Workspace account"
 echo ""
 read -rp "Press Enter to start, or Ctrl+C to cancel..."
@@ -86,7 +86,7 @@ fi
 CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 
 echo ""
-echo "Claude Code needs you to sign in (Claude Max recommended)."
+echo "Claude Code needs you to sign in (any paid plan: Pro, Max, Team, or Enterprise)."
 echo "If you haven't signed in yet, open a new Terminal window and run: claude"
 echo ""
 read -rp "Press Enter once you're signed in to Claude..."
