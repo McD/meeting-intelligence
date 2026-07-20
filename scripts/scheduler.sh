@@ -590,9 +590,9 @@ run_claude() {
     elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
         log "ERROR: $label hit transient API errors on both attempts."
         notify_slack_once api-error ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
-    elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired"; then
+    elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired\|Please run /login"; then
         log "ERROR: $label auth failure."
-        notify_slack_once claude-oauth ":key: Briefings paused — OAuth token expired. Run \`claude\` interactively to refresh."
+        notify_slack_once claude-oauth ":key: Briefings paused — Claude Code session expired or logged out. Run \`claude\` interactively and complete /login."
     elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
         log "ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give."
         notify_slack_once permission ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
