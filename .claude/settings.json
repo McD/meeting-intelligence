@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gws calendar events list *)",
+      "Bash(gws gmail users messages list *)",
+      "Bash(gws gmail users threads get *)",
+      "mcp__claude_ai_Google_Calendar__list_events",
+      "mcp__claude_ai_Gmail__get_thread",
+      "mcp__claude_ai_Gmail__search_threads",
+      "mcp__claude_ai_Slack__slack_search_public_and_private"
+    ]
+  }
+}

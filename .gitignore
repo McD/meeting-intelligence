@@ -3,6 +3,7 @@
 *.bak
 *.tmp
 .scheduler.lock
+.claude/settings.local.json
 .venv/
 __pycache__/
 *.egg-info/
