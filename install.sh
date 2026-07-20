@@ -222,10 +222,28 @@ echo ""
 echo -e "${BOLD}Step 9: Installing slash commands${NC}"
 mkdir -p ~/.claude/commands
 
-cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
-cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
-cp "$SCRIPT_DIR/commands/digest.md"    ~/.claude/commands/digest.md
-ok "/briefing, /follow-up, and /digest installed."
+# Identity substitution: $MY_EMAIL / $COMPANY_DOMAIN / $MY_NAME / $MY_FIRST_NAME /
+# $LOOKBACK_DAYS in the source .md become literal values in the installed copies,
+# so Claude never generates preamble shell (variable-assignment leading tokens
+# bypass the allowlist and cause prompt floods). Mirrors update.sh.
+MY_FIRST_NAME="${MY_NAME%% *}"
+LOOKBACK_DAYS="${LOOKBACK_DAYS:-60}"
+MY_EMAIL="$MY_EMAIL" COMPANY_DOMAIN="$COMPANY_DOMAIN" MY_NAME="$MY_NAME" \
+MY_FIRST_NAME="$MY_FIRST_NAME" LOOKBACK_DAYS="$LOOKBACK_DAYS" \
+SRC="$SCRIPT_DIR/commands" DST="$HOME/.claude/commands" \
+python3 <<'PYEOF' || fail "Command file substitution failed."
+import os, re
+from pathlib import Path
+vars = {k: os.environ[k] for k in ("MY_EMAIL", "COMPANY_DOMAIN", "MY_NAME", "MY_FIRST_NAME", "LOOKBACK_DAYS")}
+src, dst = Path(os.environ["SRC"]), Path(os.environ["DST"])
+patterns = [(re.compile(r'\$\{' + name + r'\}|\$' + name + r'\b'), value) for name, value in vars.items()]
+for md in ("briefing.md", "follow-up.md", "digest.md"):
+    text = (src / md).read_text()
+    for pat, val in patterns:
+        text = pat.sub(val, text)
+    (dst / md).write_text(text)
+PYEOF
+ok "/briefing, /follow-up, and /digest installed (identity substituted)."
 
 echo ""
 echo -e "${YELLOW}Note:${NC} If you have Claude Code open in another window, close and"

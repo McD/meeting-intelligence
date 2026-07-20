@@ -29,8 +29,14 @@ echo ""
 [ -f ~/.briefings_config ] || fail "No ~/.briefings_config found. Run install.sh first."
 MY_EMAIL=$(grep '^MY_EMAIL=' ~/.briefings_config | cut -d= -f2)
 COMPANY_DOMAIN=$(grep '^COMPANY_DOMAIN=' ~/.briefings_config | cut -d= -f2)
+MY_NAME=$(grep '^MY_NAME=' ~/.briefings_config | cut -d= -f2-)
+LOOKBACK_DAYS=$(grep '^LOOKBACK_DAYS=' ~/.briefings_config | cut -d= -f2)
 [ -z "$MY_EMAIL" ] && fail "MY_EMAIL missing from ~/.briefings_config. Re-run install.sh."
 [ -z "$COMPANY_DOMAIN" ] && fail "COMPANY_DOMAIN missing from ~/.briefings_config. Re-run install.sh."
+# MY_NAME falls back to local-part of MY_EMAIL; LOOKBACK_DAYS defaults to 60.
+[ -z "$MY_NAME" ] && MY_NAME="${MY_EMAIL%%@*}"
+[ -z "$LOOKBACK_DAYS" ] && LOOKBACK_DAYS=60
+MY_FIRST_NAME="${MY_NAME%% *}"
 
 # ── Pull latest from git ─────────────────────────────────────────────────────
 cd "$SCRIPT_DIR"
@@ -71,12 +77,37 @@ else
     info "Updating from $OLD_VERSION → $NEW_VERSION"
 fi
 
-# ── Re-install command files ─────────────────────────────────────────────────
+# ── Re-install command files with identity substitution ─────────────────────
+# The command .md files reference identity values as $MY_EMAIL, $COMPANY_DOMAIN,
+# $MY_NAME, $MY_FIRST_NAME, $LOOKBACK_DAYS (both bare and braced forms). We
+# substitute these to LITERAL values at install time so Claude never generates
+# runtime lookup shell (like `MY_EMAIL=$(grep ...)`) whose leading token is a
+# variable assignment — those bypass the allowlist and cause permission-prompt
+# floods. Only dollar-prefixed forms are substituted; bare occurrences like
+# `os.environ["MY_EMAIL"]` (a Python string literal) are left untouched.
 mkdir -p ~/.claude/commands
-cp "$SCRIPT_DIR/commands/briefing.md"  ~/.claude/commands/briefing.md
-cp "$SCRIPT_DIR/commands/follow-up.md" ~/.claude/commands/follow-up.md
-cp "$SCRIPT_DIR/commands/digest.md"    ~/.claude/commands/digest.md
-ok "briefing.md, follow-up.md, and digest.md updated."
+MY_EMAIL="$MY_EMAIL" COMPANY_DOMAIN="$COMPANY_DOMAIN" MY_NAME="$MY_NAME" \
+MY_FIRST_NAME="$MY_FIRST_NAME" LOOKBACK_DAYS="$LOOKBACK_DAYS" \
+SRC="$SCRIPT_DIR/commands" DST="$HOME/.claude/commands" \
+python3 <<'PYEOF' || fail "Command file substitution failed."
+import os, re
+from pathlib import Path
+
+vars = {k: os.environ[k] for k in ("MY_EMAIL", "COMPANY_DOMAIN", "MY_NAME", "MY_FIRST_NAME", "LOOKBACK_DAYS")}
+src, dst = Path(os.environ["SRC"]), Path(os.environ["DST"])
+
+# Match $VAR (word-boundary) and ${VAR} — dollar-prefixed only, so Python string
+# literals like os.environ["MY_EMAIL"] are safe.
+patterns = [(re.compile(r'\$\{' + name + r'\}|\$' + name + r'\b'), value)
+            for name, value in vars.items()]
+
+for md in ("briefing.md", "follow-up.md", "digest.md"):
+    text = (src / md).read_text()
+    for pat, val in patterns:
+        text = pat.sub(val, text)
+    (dst / md).write_text(text)
+PYEOF
+ok "briefing.md, follow-up.md, and digest.md installed (identity substituted)."
 
 # ── Re-install scheduler ─────────────────────────────────────────────────────
 mkdir -p ~/Briefings
@@ -149,10 +180,13 @@ settings_path = os.path.join(os.environ['HOME'], '.claude', 'settings.json')
 home = os.environ['HOME']
 
 REQUIRED = [
-    "Bash(gws:*)", "Bash(python3:*)", "Bash(curl:*)", "Bash(date:*)",
-    "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)", "Bash(mv:*)",
-    "Bash(chmod:*)", "Bash(cat:*)", "Bash(readlink:*)", "Bash(echo:*)",
-    "Bash(sqlite3:*)",
+    # Space-before-wildcard is the current Claude Code pattern form. Historical
+    # colon-form (`Bash(foo:*)`) was silently no-op'd by a Claude Code syntax
+    # migration in mid-2026, causing prompt-flood regressions — do NOT revert.
+    "Bash(gws *)", "Bash(python3 *)", "Bash(curl *)", "Bash(date *)",
+    "Bash(ls *)", "Bash(find *)", "Bash(grep *)", "Bash(mv *)",
+    "Bash(chmod *)", "Bash(cat *)", "Bash(readlink *)", "Bash(echo *)",
+    "Bash(sqlite3 *)",
     f"Read({home}/.briefings_config)",
     f"Read({home}/.slack_webhook)",
     f"Read({home}/Briefings/*)",
