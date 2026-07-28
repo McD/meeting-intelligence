@@ -375,8 +375,18 @@ info "Installing briefings_mcp package (editable from $SCRIPT_DIR)..."
 if ! "$VENV_PY" -m pip install --quiet --editable "$SCRIPT_DIR"; then
     fail "Could not install briefings_mcp. Re-run: $VENV_PY -m pip install --editable $SCRIPT_DIR"
 fi
-"$VENV_PY" -c "import briefings_mcp; import fastmcp" 2>/dev/null \
-    || fail "briefings_mcp or fastmcp not importable from $VENV_PY after install."
+# `from fastmcp import FastMCP` — not bare `import fastmcp` — because the
+# 2→3 in-place upgrade race leaves fastmcp as an implicit namespace package:
+# the module resolves, but __init__.py is missing so FastMCP can't be imported.
+if ! "$VENV_PY" -c "import briefings_mcp; from fastmcp import FastMCP" 2>/dev/null; then
+    warn "fastmcp import broken (v2→v3 in-place race). Repairing with --force-reinstall..."
+    if ! "$VENV_PY" -m pip install --quiet --force-reinstall fastmcp fastmcp-slim; then
+        fail "fastmcp repair failed. Run: $VENV_PY -m pip install --force-reinstall fastmcp fastmcp-slim"
+    fi
+    "$VENV_PY" -c "from fastmcp import FastMCP" 2>/dev/null \
+        || fail "fastmcp still broken after --force-reinstall. Delete $VENV_DIR and re-run install.sh."
+    ok "fastmcp repaired via --force-reinstall."
+fi
 ok "briefings_mcp installed (editable). fastmcp resolved."
 
 # Step 11d: initialise the ledger file (never truncate — preserves prior decisions)

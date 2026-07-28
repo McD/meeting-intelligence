@@ -151,6 +151,18 @@ else
         warn "pip install failed. Re-run: $VENV_PY -m pip install --editable $SCRIPT_DIR"
     fi
 
+    # `from fastmcp import FastMCP` — not bare `import fastmcp` — because the
+    # 2→3 in-place upgrade race leaves fastmcp as an implicit namespace package:
+    # the module resolves, but __init__.py is missing so FastMCP can't be imported.
+    if ! "$VENV_PY" -c "from fastmcp import FastMCP" 2>/dev/null; then
+        warn "fastmcp import broken (v2→v3 in-place race). Repairing with --force-reinstall..."
+        if "$VENV_PY" -m pip install --quiet --force-reinstall fastmcp fastmcp-slim; then
+            ok "fastmcp repaired via --force-reinstall."
+        else
+            warn "fastmcp repair failed. Run: $VENV_PY -m pip install --force-reinstall fastmcp fastmcp-slim"
+        fi
+    fi
+
     # Re-validate MCP registration. If the entry was removed (e.g. user reset
     # claude config), re-add it pointing at the same venv python.
     CLAUDE_BIN="$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")"
