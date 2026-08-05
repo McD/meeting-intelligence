@@ -158,15 +158,37 @@ umask 077
 mkdir -p "$BRIEFING_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; }
+# NOTE (2026-08-05): Slack delivery is currently disabled — Mark lost workspace
+# admin permissions (guest account) and can no longer regenerate an incoming
+# webhook. `~/.slack_webhook` has been renamed to `~/.slack_webhook.disabled`,
+# which makes this function short-circuit at the [ -n "$SLACK_WEBHOOK" ] check
+# below, so every notify path is a clean no-op. Email is now the sole
+# notification surface. Code kept intact for the day a webhook is available
+# again (guest-permission restoration, or a different endpoint like ntfy /
+# Telegram — just rewrite ~/.slack_webhook to the new URL and, if the payload
+# shape changes, tweak the curl body below).
 notify_slack() {
     [ -n "$SLACK_WEBHOOK" ] || return 0
     # --max-time/--connect-timeout: Slack stalls must not hold .scheduler.lock.
     # Delivery is fire-and-forget; nothing downstream depends on the response.
-    local payload
+    # Capture HTTP status + body so a dead webhook (invalid_token, no_service)
+    # is loud in scheduler.log instead of failing silently — 2026-08-05 auth
+    # outage delivered 0 alerts to Slack because the webhook had been revoked
+    # since March and the old `-s ... >/dev/null 2>&1` swallowed the 400s.
+    local payload http_code body curl_rc
     payload=$(/usr/bin/python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$1")
-    curl -s --connect-timeout 5 --max-time 10 -X POST "$SLACK_WEBHOOK" \
+    http_code=$(curl -sS --connect-timeout 5 --max-time 10 \
+        -o /tmp/.notify_slack_body.$$ -w '%{http_code}' \
+        -X POST "$SLACK_WEBHOOK" \
         -H 'Content-type: application/json' \
-        -d "$payload" >/dev/null 2>&1 || true
+        -d "$payload" 2>&1)
+    curl_rc=$?
+    body=$(cat /tmp/.notify_slack_body.$$ 2>/dev/null); rm -f /tmp/.notify_slack_body.$$
+    if [ "$curl_rc" -ne 0 ]; then
+        log "WARN: notify_slack curl failed (rc=$curl_rc): $http_code"
+    elif [ "$http_code" != "200" ]; then
+        log "WARN: notify_slack HTTP $http_code — body: ${body:-<empty>}. Webhook may be revoked; regenerate in Slack app config and rewrite ~/.slack_webhook."
+    fi
 }
 
 # Cause-class deduped Slack notification. First failure of a kind pings; repeats
