@@ -172,8 +172,18 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; 
 # failures remain visible even when Slack is disabled (current state — see the
 # note on notify_slack below). No network dependency, no auth dependency — works
 # even when both Claude Code and gws OAuth are dead, which is precisely the
-# window in which we most need to notify. Errors swallowed: a failed notification
-# must never break a cycle.
+# window in which we most need to notify.
+#
+# CAVEAT (2026-08-25): AppleScript's `display notification` cannot declare a
+# `critical` interruption level (only the UNUserNotifications API can), so
+# Do Not Disturb / Focus modes silently suppress banners. Notifications are
+# still queued in Notification Center and visible when the menu-bar clock is
+# clicked — but they will NOT ping while a Focus mode is active. Discovered
+# when smoke tests fired with rc=0 but produced no audible/visual banner;
+# `Assertions.json` confirmed DND was on. If you rely on push while focused,
+# add a phone channel (ntfy.sh) — planned but not shipped.
+#
+# Errors swallowed: a failed notification must never break a cycle.
 notify_macos() {
     local title="$1" body="$2"
     # Collapse newlines to spaces — AppleScript -e string literals must not span lines,
