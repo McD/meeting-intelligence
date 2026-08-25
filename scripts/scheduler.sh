@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-06-26 — run_with_watchdog now distinguishes host-sleep-induced deadline expiry from real stalls. Each poll iteration measures (actual wall duration) vs (wait_budget); excesses beyond a 30s jitter allowance are attributed to host sleep. On deadline expiry, if >50% of the timeout was sleep, exit 125 (skip, no Slack) instead of 124 (real timeout, Slack ping). Also raised CLAUDE_TIMEOUT_SECONDS 600→900 since legitimate briefing+follow-up cycles routinely landed 420-600s against the prior cap. Together these address the 30-timeouts-in-40h flood the user surfaced on 2026-06-26: the overnight cluster (06-25 19:19 → 06-26 08:50, 13 consecutive) was the laptop sleeping, and the daytime ones had no headroom. Previous: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-08-25 — notify_macos() added as a second surface alongside notify_slack(). Every notify_slack call now fires a macOS Notification Center alert before the SLACK_WEBHOOK guard, so failures are visible even while Slack is disabled (guest account, ~/.slack_webhook.disabled). notify_slack_once gains a two-part streak escalation: the 3rd suppressed call inside the 4h dedup window fires ONE bonus re-notify per window (gated by .notify_escalated_${key}), and every real fire (Path 4 or escalation) increments a cumulative .notify_count_${key} so the "[repeat ×N]" prefix conveys outage duration rather than always reading "×3". Escalation must NOT refresh the dedup marker — the original attempt at this feature did, which reintroduced the 2026-06-15 flood shape (~32 pings/day under a sustained outage); the adversarial review caught it before commit. Addresses the 2026-08-19 → 08-25 outage where 342 consecutive "OAuth session expired" cycles fired silently against a disabled Slack surface — 6 days of no briefings/follow-ups that Mark only noticed when a specific follow-up (Carl McD 1:1) didn't land. State stored per-key in .notify_dedup_/.notify_streak_/.notify_escalated_/.notify_count_${key}; all four cleared together on successful cycle, gws-oauth recovery, and venv recovery (with the same venv-broken/auto-expiry-failed exclusion the pre-existing dedup logic used). Previous: 2026-06-26 — run_with_watchdog now distinguishes host-sleep-induced deadline expiry from real stalls. Each poll iteration measures (actual wall duration) vs (wait_budget); excesses beyond a 30s jitter allowance are attributed to host sleep. On deadline expiry, if >50% of the timeout was sleep, exit 125 (skip, no Slack) instead of 124 (real timeout, Slack ping). Also raised CLAUDE_TIMEOUT_SECONDS 600→900 since legitimate briefing+follow-up cycles routinely landed 420-600s against the prior cap. Together these address the 30-timeouts-in-40h flood the user surfaced on 2026-06-26: the overnight cluster (06-25 19:19 → 06-26 08:50, 13 consecutive) was the laptop sleeping, and the daytime ones had no headroom. Previous: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -158,6 +158,31 @@ umask 077
 mkdir -p "$BRIEFING_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; }
+
+# macOS Notification Center surface. Fires alongside every notify_slack call so
+# failures remain visible even when Slack is disabled (current state — see the
+# note on notify_slack below). No network dependency, no auth dependency — works
+# even when both Claude Code and gws OAuth are dead, which is precisely the
+# window in which we most need to notify. Errors swallowed: a failed notification
+# must never break a cycle.
+notify_macos() {
+    local title="$1" body="$2"
+    # Collapse newlines to spaces — AppleScript -e string literals must not span lines,
+    # and macOS notification banners are single-line anyway. Keeps a future caller with
+    # a heredoc body from silently producing no banner.
+    body="${body//$'\n'/ }"; body="${body//$'\r'/ }"
+    # Escape backslashes then double quotes for AppleScript string literals.
+    title="${title//\\/\\\\}"; title="${title//\"/\\\"}"
+    body="${body//\\/\\\\}";   body="${body//\"/\\\"}"
+    # Capture stderr so a denied notification permission (macOS never granted Script
+    # Editor / osascript the Notification-Center entitlement), a missing Aqua session
+    # (launchd cycle during logout), or an AppleScript syntax error surfaces in the
+    # log instead of being swallowed. stdout still discarded — banners don't reply.
+    local err
+    err=$(/usr/bin/osascript -e "display notification \"$body\" with title \"$title\"" 2>&1 >/dev/null) || true
+    [ -n "$err" ] && log "WARN: notify_macos — ${err//$'\n'/ | }"
+}
+
 # NOTE (2026-08-05): Slack delivery is currently disabled — Mark lost workspace
 # admin permissions (guest account) and can no longer regenerate an incoming
 # webhook. `~/.slack_webhook` has been renamed to `~/.slack_webhook.disabled`,
@@ -168,6 +193,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M')] $1" >> "$BRIEFING_DIR/scheduler.log"; 
 # Telegram — just rewrite ~/.slack_webhook to the new URL and, if the payload
 # shape changes, tweak the curl body below).
 notify_slack() {
+    notify_macos "Meeting-Intelligence" "$1"
     [ -n "$SLACK_WEBHOOK" ] || return 0
     # --max-time/--connect-timeout: Slack stalls must not hold .scheduler.lock.
     # Delivery is fire-and-forget; nothing downstream depends on the response.
@@ -196,18 +222,61 @@ notify_slack() {
 # are cleared on a successful claude cycle so the next failure re-pings. Added
 # 2026-06-15 after a 48h opus-4-7 LLM-stall window produced ~39 :hourglass: pings.
 NOTIFY_DEDUP_WINDOW=14400  # 4h
+NOTIFY_STREAK_THRESHOLD=3  # Nth suppressed call inside the window forces at most ONE bonus re-notify per dedup window.
 notify_slack_once() {
     local key="$1" msg="$2"
     local marker="$BRIEFING_DIR/.notify_dedup_${key}"
+    local streak_file="$BRIEFING_DIR/.notify_streak_${key}"
+    local escalated_marker="$BRIEFING_DIR/.notify_escalated_${key}"
+    local count_file="$BRIEFING_DIR/.notify_count_${key}"
+    local count
     if [ -f "$marker" ]; then
         local age=$(( $(date +%s) - $(stat -f %m "$marker") ))
         if [ "$age" -lt "$NOTIFY_DEDUP_WINDOW" ]; then
-            log "Slack ping suppressed (key=$key, last fired ${age}s ago, window ${NOTIFY_DEDUP_WINDOW}s)."
+            local streak=$(( $(cat "$streak_file" 2>/dev/null || echo 0) + 1 ))
+            echo "$streak" > "$streak_file"
+            # Already escalated inside this 4h window — stay silent until the marker
+            # expires and Path 4 (fresh fire) runs. This is the load-bearing guard
+            # against the 2026-06-15 flood pattern: escalation must NOT refresh the
+            # dedup marker, or the window never elapses and every Nth cycle re-fires
+            # forever (~32 pings/day under a sustained outage).
+            if [ -f "$escalated_marker" ]; then
+                log "Notification suppressed (key=$key, streak=$streak, escalation already fired this window)."
+                return 0
+            fi
+            if [ "$streak" -lt "$NOTIFY_STREAK_THRESHOLD" ]; then
+                log "Notification suppressed (key=$key, last fired ${age}s ago, window ${NOTIFY_DEDUP_WINDOW}s, streak=$streak/$NOTIFY_STREAK_THRESHOLD)."
+                return 0
+            fi
+            # Streak escalation: one bonus notification per dedup window. Marks the
+            # escalated_marker so subsequent suppressed cycles inside the window
+            # short-circuit above; does NOT touch the dedup marker so the 4h window
+            # elapses on its original schedule.
+            touch "$escalated_marker"
+            count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+            echo "$count" > "$count_file"
+            log "Notification streak escalation (key=$key, streak=$streak, total=$count) — forcing re-notify inside dedup window."
+            notify_slack "[repeat ×${count}] $msg"
             return 0
         fi
+        # 4h window has elapsed — this is a fresh Path 4 fire, so clear the
+        # per-window escalation marker before touching the new dedup marker.
+        rm -f "$escalated_marker"
     fi
     touch "$marker"
-    notify_slack "$msg"
+    rm -f "$streak_file"
+    # count is the CUMULATIVE notify count for the current outage — Path 4 fires
+    # and escalations both increment it, and it only clears on success sweep or on
+    # explicit recovery. The label lets Mark distinguish a fresh blip from a
+    # 6-day catastrophe: "[repeat ×72] :key: ..." reads very differently from
+    # ":key: ..." with no prefix.
+    count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+    echo "$count" > "$count_file"
+    if [ "$count" -gt 1 ]; then
+        notify_slack "[repeat ×${count}] $msg"
+    else
+        notify_slack "$msg"
+    fi
 }
 
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
@@ -271,8 +340,11 @@ elif [ -f "$BRIEFING_DIR/.notify_dedup_venv-broken" ]; then
     # ping so the user knows things resumed (silent recovery erodes trust
     # in the original alert). No dedup on the recovery ping — it fires at
     # most once per broken/fixed cycle.
-    rm -f "$BRIEFING_DIR/.notify_dedup_venv-broken"
-    log "Venv preflight recovered — briefings_mcp imports OK; clearing venv-broken dedup marker."
+    rm -f "$BRIEFING_DIR/.notify_dedup_venv-broken" \
+          "$BRIEFING_DIR/.notify_streak_venv-broken" \
+          "$BRIEFING_DIR/.notify_escalated_venv-broken" \
+          "$BRIEFING_DIR/.notify_count_venv-broken"
+    log "Venv preflight recovered — briefings_mcp imports OK; clearing venv-broken dedup markers."
     notify_slack ":sparkles: Briefings venv is healthy again — weekly auto-expiry, digest, and MCP will resume on schedule."
 fi
 rm -f "$PREFLIGHT_STDERR"
@@ -436,7 +508,10 @@ fi
 
 if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
     rm -f "$GWS_AUTH_FAILED_FILE"
-    rm -f "$BRIEFING_DIR/.notify_dedup_gws-oauth"
+    rm -f "$BRIEFING_DIR/.notify_dedup_gws-oauth" \
+          "$BRIEFING_DIR/.notify_streak_gws-oauth" \
+          "$BRIEFING_DIR/.notify_escalated_gws-oauth" \
+          "$BRIEFING_DIR/.notify_count_gws-oauth"
     notify_slack ":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully."
 fi
 
@@ -657,10 +732,19 @@ if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
     # likewise weekly-branch-only and cleared by its own next occurrence.
     # These markers are cleared by their own recovery paths (see venv
     # preflight recovery branch near the top of this script).
-    for marker in "$BRIEFING_DIR"/.notify_dedup_*; do
+    # Clear all four notify-state file kinds on successful cycle: dedup marker,
+    # streak counter, per-window escalation marker, cumulative count. venv-broken
+    # and auto-expiry-failed are excluded from all four for the same reason the
+    # original dedup exclusion existed — a successful claude cycle doesn't imply
+    # those subsystems are healthy (see the 2026-07-15 flood-avoidance comment
+    # on the venv preflight branch above).
+    for marker in "$BRIEFING_DIR"/.notify_dedup_* "$BRIEFING_DIR"/.notify_streak_* "$BRIEFING_DIR"/.notify_escalated_* "$BRIEFING_DIR"/.notify_count_*; do
         [ -e "$marker" ] || continue
         case "$(basename "$marker")" in
             .notify_dedup_venv-broken|.notify_dedup_auto-expiry-failed) continue ;;
+            .notify_streak_venv-broken|.notify_streak_auto-expiry-failed) continue ;;
+            .notify_escalated_venv-broken|.notify_escalated_auto-expiry-failed) continue ;;
+            .notify_count_venv-broken|.notify_count_auto-expiry-failed) continue ;;
             *) rm -f "$marker" ;;
         esac
     done
