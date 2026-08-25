@@ -107,7 +107,7 @@ from datetime import datetime, timedelta
 log_path = sys.argv[1]
 since = datetime.now() - timedelta(days=7)
 
-skipped = ran = done = t_timeout = t_auth = t_perm = t_other = 0
+skipped = ran = done = t_timeout = t_auth = t_perm = t_other = t_escalation = 0
 
 with open(log_path, errors='replace') as f:
     for line in f:
@@ -120,7 +120,11 @@ with open(log_path, errors='replace') as f:
             continue
         if ts < since:
             continue
-        if 'skipped Claude' in line:
+        # Order matters: streak-escalation lines are ERROR-adjacent but must not
+        # double-count as t_other. Check escalation before the generic ERROR bucket.
+        if 'streak escalation' in line:
+            t_escalation += 1
+        elif 'skipped Claude' in line:
             skipped += 1
         elif line.rstrip().endswith('Done.'):
             done += 1
@@ -147,6 +151,11 @@ failure_detail = ", ".join(filter(None, [
     f"{t_other} other" if t_other else "",
 ]))
 lines.append(f"  {done} successful, {failures} failed" + (f" ({failure_detail})" if failures else ""))
+# Surface streak escalations separately — they are notification events (evidence
+# that a real sustained outage is being flagged), not distinct failure cycles.
+# Undercounting them in the pre-fix parser was the review's Important #6.
+if t_escalation:
+    lines.append(f"  {t_escalation} streak escalation(s) fired inside dedup windows")
 print("\\n".join(lines))
 PYEOF
     )
