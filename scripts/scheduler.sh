@@ -709,7 +709,7 @@ run_claude() {
     elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired\|Please run /login"; then
         log "ERROR: $label auth failure."
         notify_slack_once claude-oauth ":key: Briefings paused — Claude Code session expired or logged out. Run \`claude\` interactively and complete /login."
-    elif echo "$output" | grep -qi "permission\|requires approval\|allow this tool\|not allowed"; then
+    elif echo "$output" | grep -qiE "permission prompt|requires approval|allow this tool|not allowed|tool use was not approved"; then
         log "ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give."
         notify_slack_once permission ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
     elif [ "$rc" -ne 0 ]; then
