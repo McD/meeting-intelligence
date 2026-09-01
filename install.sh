@@ -97,7 +97,7 @@ read -rp "Press Enter once you're signed in to Claude..."
 # for adhoc-signed CLI binaries like Claude Code's per-version executable.
 # Without remediation, every access re-prompts the user. The helper script
 # installed here clears stuck rows when invoked; an opt-in launchd plist at
-# scripts/tcc-unstick.plist.template can automate the cleanup daily. See
+# scripts/tcc-unstick.plist.template can automate the cleanup every 15 minutes. See
 # docs/solutions/integration-issues/macos-sequoia-tcc-gtimeout-stuck-state-
 # 2026-06-01.md for the full pattern.
 #

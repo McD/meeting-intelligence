@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-launchd plist template for the daily TCC stuck-row cleanup.
+launchd plist template for the TCC stuck-row cleanup.
 
 Opt-in. Not installed by install.sh by default; the cleanup helper script
 ~/.local/bin/claude-tcc-unstick can be run manually whenever a stuck TCC
 prompt appears. Install this plist when the manual cadence becomes
-annoying and you want a daily auto-clean.
+annoying and you want an automatic sweep.
 
 To install:
     cp scripts/tcc-unstick.plist.template ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
@@ -17,9 +17,11 @@ To uninstall:
     launchctl unload ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
     rm ~/Library/LaunchAgents/com.${USER}.tcc-unstick.plist
 
-Fires daily at 06:00 local time — before the typical work-day, so any
-fresh-consent prompt that the cleanup triggers can be answered before
-any morning meetings depend on the scheduler running cleanly.
+Fires every 15 minutes and on load. Previously daily at 06:00, bumped
+2026-09-01 after kTCCServiceSystemPolicyAppData for the current Claude
+Code version was seen flipping back to auth_value=5 during the day and
+re-prompting until the next 06:00 sweep. The UPDATE 5→2 strategy in the
+helper script is unchanged; only the cadence.
 -->
 <plist version="1.0">
 <dict>
@@ -31,13 +33,11 @@ any morning meetings depend on the scheduler running cleanly.
         <string>/Users/REPLACE_ME_USER/.local/bin/claude-tcc-unstick</string>
     </array>
 
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>6</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/REPLACE_ME_USER/Briefings/tcc-unstick.log</string>

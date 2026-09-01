@@ -113,7 +113,7 @@ Terminal's grants do not reach the scheduler. launchd-spawned processes don't in
 
 macOS Sequoia writes `auth_value=5` (re-prompt-always) instead of `auth_value=2` (allowed) when you click Allow on a TCC prompt for an adhoc-signed CLI binary like Claude Code's per-version executable. The `claude-tcc-unstick` helper remediates this by directly updating the row to `auth_value=2`.
 
-The scheduler runs `claude-tcc-unstick` automatically on every Claude Code version bump. A daily launchd job (`com.<user>.tcc-unstick`, installed by `install.sh`) also runs it at 06:00 each morning to catch any rows that slip through.
+The scheduler runs `claude-tcc-unstick` automatically on every Claude Code version bump. An opt-in launchd job (`com.<user>.tcc-unstick`, template at `scripts/tcc-unstick.plist.template`) sweeps every 15 minutes to catch any rows that slip through — install it if the manual cadence becomes annoying.
 
 To run it manually:
 

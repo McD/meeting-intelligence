@@ -127,7 +127,7 @@ ok "scheduler.sh updated."
 # macos-sequoia-tcc-gtimeout-stuck-state-2026-06-01.md for the full pattern.
 #
 # Optional opt-in: scripts/tcc-unstick.plist.template ships a launchd plist
-# that runs this helper daily at 06:00. Not installed by default.
+# that runs this helper every 15 minutes. Not installed by default.
 mkdir -p ~/.local/bin
 cp "$SCRIPT_DIR/scripts/claude-tcc-unstick" ~/.local/bin/claude-tcc-unstick
 chmod +x ~/.local/bin/claude-tcc-unstick
