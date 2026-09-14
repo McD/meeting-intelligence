@@ -641,12 +641,27 @@ else
 fi
 
 # === Actions tracker digest gate (Phase 3) ===
-# Mon and Thu at 10:00-10:14 local, exactly once per day (idempotent against today's digest file).
+# Mon and Thu, any cycle from 10:00 until 18:00 local, exactly once per day.
+#
+# 2026-09-14: the upper bound was "10:15", i.e. a single 15-min window that had to
+# contain a cycle *start*. It does not reliably: cycle starts drift, because a long
+# cycle delays the next launchd fire, and the post-wake host-sleep skips stretch the
+# gaps further. Two consecutive digests were lost silently —
+#   09-10 (Thu): starts at 09:32 and 10:15; the 09:32 cycle ran 27 min, and the
+#                exclusive upper bound excluded 10:15 itself. Nothing in 10:00-10:14.
+#   09-14 (Mon): starts at 09:41 and 10:19. Same gap, same miss.
+# Nothing alerted, because a digest that never fires is not a failure path.
+#
+# The file check below — not the clock — is what enforces once-per-day, so widening
+# the window to 18:00 turns it into a catch-up: the first cycle after 10:00 on a
+# digest day runs it, and every later cycle that day is a no-op. The 18:00 cap stops
+# a Mac that was asleep all day from mailing a stale actions tracker late at night;
+# past that the day is simply skipped, same as before.
 DOW=$(date +%u)   # 1=Mon, 4=Thu
 HHMM=$(date +%H:%M)
 TODAY=$(date +%Y-%m-%d)
 if { [ "$DOW" = "1" ] || [ "$DOW" = "4" ]; } \
-   && [[ "$HHMM" > "09:59" ]] && [[ "$HHMM" < "10:15" ]] \
+   && [[ "$HHMM" > "09:59" ]] && [[ "$HHMM" < "18:00" ]] \
    && [ ! -f "$BRIEFING_DIR/${TODAY}-1000-digest.md" ]; then
     NEED_DIGEST=1
 fi
