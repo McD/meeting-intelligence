@@ -82,9 +82,6 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 - **Digest filter skips unassigned owners.** Items with `owner` empty or equal
   to `"unassigned"` are filtered out of both Yours and Owed-to-you (kept in
   the ledger for audit; suppressed from the rendered digest).
-
-### Changed
-
 - **Digest reply dispatcher parses every line, not just the first.** Step 5
   of `commands/follow-up.md` previously took only the first non-empty,
   non-quoted line and matched a single keyword. A reply like
@@ -112,6 +109,23 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   `(N couldn't be auto-checked)`.
 
 ### Fixed
+
+- **Headless runs survive Claude login expiry** (2026-10-14). The scheduler
+  reads a one-year `claude setup-token` token from the login Keychain and
+  passes it as `CLAUDE_CODE_OAUTH_TOKEN`. The auth-failure classifier now
+  matches `Failed to authenticate: OAuth session expired`, which had slipped
+  through to the generic branch for 30 hours of the 2026-10-13 outage.
+- **A failed digest send is retried instead of counted as delivered**
+  (2026-10-14). `/digest` writes `-1000-digest.sent` only after Gmail returns
+  a message id; the scheduler gate, `/digest` Step 0 and the liveness check key
+  on it. The 2026-10-08 tracker was lost because the pre-send `.md` counted.
+- **Threaded replies work again on gws 0.22** (2026-10-14). `expand:`,
+  `quote:`, `research:` responses and digest acks use `gws gmail +reply`;
+  `+send --thread-id` no longer exists.
+- **Scheduler log keeps history** (2026-10-14). It rotates to
+  `scheduler.log.1` at 500 KB instead of trimming to the last 500 lines.
+- **Setup scripts no longer re-add an ignored `Write()` permission rule**
+  (2026-10-14); they add the equivalent `Edit()` rule.
 
 - **Digest numbering resets across items in the rendered email.** The
   `md_to_html` renderer closed the `<ol>` on every indented continuation line

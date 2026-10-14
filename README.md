@@ -80,6 +80,17 @@ A cycle with nothing to do logs `Pre-flight: nothing to do, skipped Claude.` and
 
 **Reply keywords on briefing, follow-up, and digest emails** — `research: <query>`, `cancel`, `extend` (every email); plus `expand: <request>`, `quote: <topic>` (follow-up only — both require a transcript); plus `done: N`, `done-owed: N`, `more: N`, `drop: N`, `not-mine: N`, `drop-owed: N`, `send: N` (digest only). All are picked up by the next scheduler cycle from the awaiting-reply / awaiting-digest state file written when the email was sent. See [Reply keywords](#reply-keywords) below for the full list and semantics.
 
+### Keep Claude signed in for the scheduler
+
+An interactive `/login` session expires after a few weeks, and every cycle then fails until you log in again. Give the scheduler its own one-year token instead. Run these in a normal Terminal window, not inside a Claude session, so the token never lands in a transcript:
+
+```bash
+claude setup-token
+security add-generic-password -U -a "$(id -un)" -s meeting-intelligence-claude-token -T /usr/bin/security -w
+```
+
+The first command prints a token starting `sk-ant-oat01-`. Copy all of it (widen the window so it isn't wrapped onto two lines) and paste it twice when the second command prompts. `scheduler.sh` reads it from the login Keychain on every cycle and passes it to `claude` as `CLAUDE_CODE_OAUTH_TOKEN`. Nothing is written to the plist, the repo, or the log. If the Keychain item is missing, the scheduler falls back to your interactive login. When the token expires, the auth alert tells you to repeat these two commands; `-U` overwrites the old entry.
+
 ## Update
 
 ```bash
@@ -87,7 +98,7 @@ cd meeting-intelligence
 bash update.sh
 ```
 
-`update.sh` pulls the latest from git, replaces `~/.claude/commands/briefing.md`, `~/.claude/commands/follow-up.md`, and `~/Briefings/scheduler.sh`, and refreshes the editable install of the `briefings_mcp` package in the runtime venv at `~/.briefings/venv`. Your config and your decision ledger are untouched. The launchd job keeps running. Re-run `bash scripts/verify-v1.sh` after updating if you want belt-and-suspenders confirmation.
+`update.sh` pulls the latest from git, replaces `~/.claude/commands/briefing.md`, `follow-up.md`, `digest.md`, and `~/Briefings/scheduler.sh`, and refreshes the editable install of the `briefings_mcp` package in the runtime venv at `~/.briefings/venv`. Your config and your decision ledger are untouched. The launchd job keeps running. Re-run `bash scripts/verify-v1.sh` after updating if you want belt-and-suspenders confirmation.
 
 ## macOS permission setup
 
@@ -415,6 +426,7 @@ claude                             # Open Claude Code interactively to debug
 Common issues:
 
 - **No briefings arriving**: confirm `launchctl list | grep briefings` shows the job, then check the log. If the log says "auth check failed", run `gws auth login`.
+- **Log says "Claude Code session expired" or "Keychain token was rejected"**: Claude itself is signed out, not Google. Set up or renew the one-year token as described in [Keep Claude signed in for the scheduler](#keep-claude-signed-in-for-the-scheduler).
 - **gws auth keeps expiring**: gws uses bundled OAuth credentials. If your Workspace admin restricts third-party OAuth apps, you may need a custom client (out of scope here).
 - **"command not found: /briefing"**: close and reopen Claude Code so it picks up the newly-installed slash command.
 - **Briefings stopped after a Claude Code update**: the scheduler detects version changes, automatically runs `claude-tcc-unstick` to fix any stuck TCC rows, and posts a Slack heads-up. If briefings still fail, check the log for `ERROR:` lines. If the log shows "Claude Code is asking for permission approval", open a terminal, run `claude` once, accept any prompts, then briefings resume on the next cycle. See [If TCC prompts keep re-firing](#if-tcc-prompts-keep-re-firing) for the full fix.

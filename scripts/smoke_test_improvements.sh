@@ -53,7 +53,9 @@ if grep -q "generate_health_summary" "$REPO/scripts/scheduler.sh"; then
 else
     fail "scheduler.sh missing generate_health_summary"
 fi
-if grep -A5 'date +%u.*= "1"' "$REPO/scripts/scheduler.sh" | grep -q "generate_health_summary"; then
+# Anchor on the weekly sentinel write that closes the block; the block's opening
+# line drifts as auto-expiry handling grows, so a fixed -A window goes stale.
+if grep -B3 '> "\$WEEKLY_SENTINEL"' "$REPO/scripts/scheduler.sh" | grep -q "^ *generate_health_summary"; then
     ok "generate_health_summary called in Monday cleanup block"
 else
     fail "generate_health_summary not called in Monday cleanup block"
