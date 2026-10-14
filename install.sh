@@ -439,10 +439,10 @@ settings_path = os.path.join(os.environ['HOME'], '.claude', 'settings.json')
 home = os.environ['HOME']
 
 REQUIRED = [
-    "Bash(gws:*)", "Bash(python3:*)", "Bash(curl:*)", "Bash(date:*)",
-    "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)", "Bash(mv:*)",
-    "Bash(chmod:*)", "Bash(cat:*)", "Bash(readlink:*)", "Bash(echo:*)",
-    "Bash(sqlite3:*)",
+    "Bash(gws *)", "Bash(python3 *)", "Bash(curl *)", "Bash(date *)",
+    "Bash(ls *)", "Bash(find *)", "Bash(grep *)", "Bash(mv *)",
+    "Bash(chmod *)", "Bash(cat *)", "Bash(readlink *)", "Bash(echo *)",
+    "Bash(sqlite3 *)",
     f"Read({home}/.briefings_config)",
     f"Read({home}/.slack_webhook)",
     f"Read({home}/Briefings/*)",
