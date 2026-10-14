@@ -145,7 +145,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
      2. **Otherwise fetch from `transcript_source`** using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
      3. If neither path yields a transcript (no substantial inline body AND fetch fails: 404, file missing, or `transcript_source` is empty — the normal case for briefing-thread replies that don't paste a transcript), send an email reply to `$thread_id` saying "`expand:` needs a meeting transcript, and this thread doesn't have one yet (either the meeting hasn't happened, or the original transcript is no longer reachable at `<transcript_source>`). Paste a transcript inline below an `expand:` line if you want to use one from a different meeting, try `research: <query>` for web research instead, or `cancel` to drop this thread." Log a one-line WARN.
      4. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more. Format as plain prose or short bulleted lists — match the spirit of the ask. Don't add scaffolding (no executive summaries, table of contents, or meta-commentary).
-     5. Send the result as an email reply to the same thread: `gws gmail +send --thread-id "$thread_id" --subject "Re: Follow-up: [meeting]" --body "$RESULT_HTML" --html`. Also Slack-mirror if `~/.slack_webhook` exists.
+     5. Send the result as an email reply to the same thread: `gws gmail +reply --message-id "$last_message_id" --body "$RESULT_HTML" --html` (`+reply` threads automatically; `gws gmail +send` has no `--thread-id` flag since gws 0.22). Also Slack-mirror if `~/.slack_webhook` exists.
      6. Log `"Expand request handled for [meeting]: [first 60 chars of request]"` (and append `" (inline transcript, N chars)"` when step 1 fired instead of step 2, so the log distinguishes the two paths).
 
    - `research: <query>` — web research on a topic, person, or company. Does **not** require a transcript; works on every awaiting-reply file (briefing, follow-up, or any future email type). Steps:
@@ -213,7 +213,9 @@ print(json.dumps(ids))
    **`$BOT_REPLY_MESSAGE_ID` capture convention.** Every send-branch in Step 5 (`expand:`, `quote:`, `research:`, and the "Anything else" unrecognized branch) MUST capture the `id` field from `gws gmail +send`'s response JSON before flowing into Step 5b. The pattern mirrors how `$THREAD_ID` is captured in Step 7 of the new-follow-up flow:
 
    ```bash
-   SEND_RESPONSE=$(gws gmail +send --thread-id "$thread_id" --subject "..." --body "$BODY" --html)
+   # Thread replies use +reply against the user message being processed. gws 0.22 dropped
+   # `+send --thread-id`; +reply sets In-Reply-To/References/threadId itself.
+   SEND_RESPONSE=$(gws gmail +reply --message-id "$last_message_id" --body "$BODY" --html)
    BOT_REPLY_MESSAGE_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
    ```
 
@@ -360,7 +362,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 **Implementation notes:**
 - The Python heredoc that wraps `update_commitment_state` should mirror the existing scheduler.sh:81 pattern: pass UUIDs via env var, call the function, emit JSON status.
 - Multiple keywords on separate lines (`done: 1\nmore: 2`) — only the FIRST keyword line is processed on this cycle, same as the awaiting-reply branch. User can re-reply with the rest.
-- Acks always go to the digest thread (`gws gmail +send --thread-id "$thread_id" --html`).
+- Acks always go to the digest thread (`gws gmail +reply --message-id "$last_message_id" --body "$HTML" --html`, replying to the user's digest reply; `+send --thread-id` no longer exists).
 - If `gws gmail +send` fails for the ack itself, log to scheduler.log and continue — the state changes already landed in the ledger; the missing ack is a degraded user experience, not data loss.
 
 ---
