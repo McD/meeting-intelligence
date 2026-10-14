@@ -310,9 +310,14 @@ notify_slack_once() {
     fi
 }
 
+# Rotate rather than trim: keep one previous generation so incident forensics
+# reach back ~2 weeks. The old tail-500 trim discarded everything before
+# 2026-10-08 11:31, which hid the cause of the 09-28 and 10-08 digest misses.
 if [ -f "$BRIEFING_DIR/scheduler.log" ] && [ "$(wc -c < "$BRIEFING_DIR/scheduler.log")" -gt 512000 ]; then
-    tail -500 "$BRIEFING_DIR/scheduler.log" > "$BRIEFING_DIR/scheduler.log.tmp"
-    mv "$BRIEFING_DIR/scheduler.log.tmp" "$BRIEFING_DIR/scheduler.log"
+    # Copy-then-truncate, not mv: launchd holds scheduler.log open (O_APPEND) as
+    # this run's stdout/stderr, so a rename would divert this cycle's output.
+    cp -p "$BRIEFING_DIR/scheduler.log" "$BRIEFING_DIR/scheduler.log.1"
+    : > "$BRIEFING_DIR/scheduler.log"
 fi
 
 if [ -f "$LOCK_FILE" ]; then
@@ -664,6 +669,10 @@ fi
 #   09-14 (Mon): starts at 09:41 and 10:19. Same gap, same miss.
 # Nothing alerted, because a digest that never fires is not a failure path.
 #
+# 2026-10-14: the check keys on the .sent marker /digest writes after Gmail confirms
+# the send, not on the .md it writes before sending. On 10-08 the send failed after
+# the .md landed, so the gate (and liveness) treated the day as done and never retried.
+#
 # The file check below — not the clock — is what enforces once-per-day, so widening
 # the window to 18:00 turns it into a catch-up: the first cycle after 10:00 on a
 # digest day runs it, and every later cycle that day is a no-op. The 18:00 cap stops
@@ -674,7 +683,7 @@ HHMM=$(date +%H:%M)
 TODAY=$(date +%Y-%m-%d)
 if { [ "$DOW" = "1" ] || [ "$DOW" = "4" ]; } \
    && [[ "$HHMM" > "09:59" ]] && [[ "$HHMM" < "18:00" ]] \
-   && [ ! -f "$BRIEFING_DIR/${TODAY}-1000-digest.md" ]; then
+   && [ ! -f "$BRIEFING_DIR/${TODAY}-1000-digest.sent" ]; then
     NEED_DIGEST=1
 fi
 

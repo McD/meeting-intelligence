@@ -244,6 +244,7 @@ After install, files land here:
 ~/Briefings/YYYY-MM-DD-HHmm-*.md       # One briefing per meeting
 ~/Briefings/YYYY-MM-DD-HHmm-followup-*.md
 ~/Briefings/YYYY-MM-DD-1000-digest.md  # Twice-weekly actions tracker (Mon/Thu)
+~/Briefings/YYYY-MM-DD-1000-digest.sent  # Written only after Gmail confirms the send; the once-per-day key
 ~/Briefings/*-awaiting-reply-*.md      # Per-meeting reply-keyword state (expand/quote/cancel/extend)
 ~/Briefings/*-awaiting-digest-*.md     # Per-digest reply-keyword state (done/more/drop/send/cancel/extend)
 ~/.briefings_config                    # MY_EMAIL, COMPANY_DOMAIN, LOOKBACK_DAYS

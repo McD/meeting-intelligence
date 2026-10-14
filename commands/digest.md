@@ -22,13 +22,14 @@ Delivery scope: only ever send email output to `$MY_EMAIL`. Never send to an add
 
 ## Step 0: Idempotency check
 
-The digest file for today's slot is `~/Briefings/$(date +%Y-%m-%d)-1000-digest.md`. If it exists already, exit cleanly without re-sending — the digest has already been generated for this slot.
+Today's slot is done only when `~/Briefings/$(date +%Y-%m-%d)-1000-digest.sent` exists. Step 5 writes that marker after Gmail confirms the send. The `.md` file is NOT the idempotency key: it is written in Step 4, before the send, so a failed send used to leave a `.md` behind that made every later cycle (and the liveness check) treat the day as delivered. That is how the 2026-10-08 tracker was lost. A leftover `.md` without a `.sent` marker means the previous attempt failed: regenerate it and send.
 
 ```bash
 DIGEST_SLUG="$(date +%Y-%m-%d)-1000-digest"
 DIGEST_FILE="$HOME/Briefings/${DIGEST_SLUG}.md"
-if [ -f "$DIGEST_FILE" ]; then
-    echo "Digest already generated for today at $DIGEST_FILE. Skipping."
+DIGEST_SENT="$HOME/Briefings/${DIGEST_SLUG}.sent"
+if [ -f "$DIGEST_SENT" ]; then
+    echo "Digest already sent for today ($DIGEST_SENT). Skipping."
     exit 0
 fi
 ```
@@ -344,7 +345,15 @@ HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$DIGEST_FILE")
 SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Actions tracker — $(date '+%A %-d %b %Y')" --body "$HTML" --html)
 THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
 SEND_MSG_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
+if [ -z "$SEND_MSG_ID" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: digest send failed — no message id from gws. Response: $(printf '%s' "$SEND_RESPONSE" | head -c 300)" >> ~/Briefings/scheduler.log
+    exit 1
+fi
+# The only "delivered" signal. Scheduler gate, Step 0 and ~/Health/liveness.sh all key on it.
+printf '%s\n' "$SEND_MSG_ID" > "${DIGEST_FILE%.md}.sent"
 ```
+
+If the send fails, stop here with a non-zero exit and say so in the final output. Do not write the `.sent` marker or the awaiting-digest file. The next scheduler cycle before 18:00 retries.
 
 **Slack heads-up** — if `~/.slack_webhook` exists, post a one-line summary:
 

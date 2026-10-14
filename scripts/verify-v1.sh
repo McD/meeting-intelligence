@@ -552,7 +552,7 @@ if [ "$WITH_DIGEST" -eq 1 ]; then
         AWAITING_FILE="$HOME/Briefings/${TODAY}-1000-awaiting-digest.md"
 
         # Clear any prior file so /digest doesn't no-op out via its idempotency check.
-        rm -f "$DIGEST_FILE" "$AWAITING_FILE"
+        rm -f "$DIGEST_FILE" "$AWAITING_FILE" "${DIGEST_FILE%.md}.sent"
 
         info "Force-generating /digest for $TODAY..."
         info "  (this can take 1–3 minutes)"
