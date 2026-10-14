@@ -10,6 +10,18 @@ SLACK_WEBHOOK=$(cat ~/.slack_webhook 2>/dev/null)
 CLAUDE=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
 GWS=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
 
+# Long-lived (1-year) headless token from `claude setup-token`, stored in the
+# login Keychain so it never lands in the plist, repo, or logs. Interactive
+# /login sessions expire far sooner and silently stalled every cycle
+# (2026-08-19 → 08-25, 2026-10-13 → 10-14). If the item is absent, claude falls
+# back to the interactive login as before. /usr/bin/security is Apple-signed,
+# so it doesn't trip the TCC re-prompt issue that Homebrew binaries do.
+CLAUDE_TOKEN_KEYCHAIN_SERVICE="meeting-intelligence-claude-token"
+if _tok=$(/usr/bin/security find-generic-password -a "$(id -un)" -s "$CLAUDE_TOKEN_KEYCHAIN_SERVICE" -w 2>/dev/null) && [ -n "$_tok" ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="$_tok"
+fi
+unset _tok
+
 # Watchdog: kills the entire process tree after $1 seconds. Implemented as a
 # Python one-liner via /usr/bin/python3 (Apple-signed Xcode CLT binary, not a
 # Homebrew CLI tool) so nothing in the audit chain is the kind of adhoc-signed
@@ -721,9 +733,16 @@ run_claude() {
     elif [ "$rc" -ne 0 ] && echo "$output" | grep -qE "$TRANSIENT_API_ERROR_RE"; then
         log "ERROR: $label hit transient API errors on both attempts."
         notify_slack_once api-error ":satellite_antenna: Briefings hit two consecutive Anthropic API socket drops at $(date '+%Y-%m-%d %H:%M'). Usually transient — next 15-min cycle will retry. Check \`~/Briefings/scheduler.log\` if it persists."
-    elif echo "$output" | grep -q "401\|authentication_error\|OAuth token has expired\|Please run /login"; then
+    # "Failed to authenticate" covers "OAuth session expired and could not be
+    # refreshed", which the CLI started emitting by 2026-10 and which slipped
+    # through to the generic branch for 30h of the 2026-10-13 outage.
+    elif echo "$output" | grep -qiE "401|authentication_error|OAuth (token|session) (has )?expired|Failed to authenticate|Not logged in|Please run /login"; then
         log "ERROR: $label auth failure."
-        notify_slack_once claude-oauth ":key: Briefings paused — Claude Code session expired or logged out. Run \`claude\` interactively and complete /login."
+        if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            notify_slack_once claude-oauth ":key: Briefings paused — the 1-year Claude token in Keychain was rejected (expired or revoked). Run \`claude setup-token\` in a terminal, then \`security add-generic-password -U -a \"\$(id -un)\" -s $CLAUDE_TOKEN_KEYCHAIN_SERVICE -T /usr/bin/security -w\` and paste the new token."
+        else
+            notify_slack_once claude-oauth ":key: Briefings paused — Claude Code session expired or logged out. Run \`claude\` interactively and complete /login (or install a 1-year token via \`claude setup-token\`)."
+        fi
     elif echo "$output" | grep -qiE "permission prompt|requires approval|allow this tool|not allowed|tool use was not approved"; then
         log "ERROR: $label permission prompt — Claude Code wants approval the scheduler cannot give."
         notify_slack_once permission ":lock: Briefings paused — Claude Code is asking for permission approval. Open a terminal, run \`claude\` once interactively, accept any prompts, then briefings will resume on the next 15-min cycle."
