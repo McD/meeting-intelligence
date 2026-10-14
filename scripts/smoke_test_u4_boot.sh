@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VENV_PY=".venv/bin/python"
+VENV_PY="${VENV_PY:-.venv/bin/python}"  # override to test another venv, e.g. a dependency bump
 if [ ! -x "$VENV_PY" ]; then
   echo "FAIL: $VENV_PY not found — venv not provisioned" >&2
   exit 1

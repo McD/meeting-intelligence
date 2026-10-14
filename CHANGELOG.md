@@ -108,6 +108,16 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   fail are now counted and surfaced in the Slack heads-up as
   `(N couldn't be auto-checked)`.
 
+### Changed
+
+- **fastmcp 3.4 → 4.1** (2026-10-14; supersedes Dependabot's `<5` bump). The
+  MCP SDK underneath moves 1.29 → 2.3. Verified by building a fresh venv and
+  diffing raw stdio JSON-RPC responses from both versions against the live
+  ledger across protocol versions 2024-11-05 through 2025-11-25: tool schemas,
+  results, null returns and error paths are identical apart from the pydantic
+  docs URL inside validation errors. Floor is 4.1 because that is what was
+  tested. `smoke_test_u4_boot.sh` now accepts `VENV_PY=` to test another venv.
+
 ### Fixed
 
 - **Headless runs survive Claude login expiry** (2026-10-14). The scheduler
