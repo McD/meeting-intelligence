@@ -120,6 +120,10 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 
 ### Fixed
 
+- **Token expiry is flagged a month ahead** (2026-10-14). From 335 days after
+  the Keychain token was last written (its own `mdat`, so renewing resets it),
+  the scheduler emails a renewal reminder at most once a week, plus a banner.
+  Digest `.sent` markers are now included in the 30-day cleanup.
 - **Headless runs survive Claude login expiry** (2026-10-14). The scheduler
   reads a one-year `claude setup-token` token from the login Keychain and
   passes it as `CLAUDE_CODE_OAUTH_TOKEN`. The auth-failure classifier now

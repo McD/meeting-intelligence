@@ -394,6 +394,7 @@ WEEKLY_SENTINEL="$BRIEFING_DIR/.last_weekly_summary"
 if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL" 2>/dev/null)" ]; then
     find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
     find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
+    find "$BRIEFING_DIR" -name "*-digest.sent" -mtime +30 -delete
     log "Cleaned up files older than 30 days."
 
     # Auto-expire stale open commitments from the ledger.
@@ -550,6 +551,47 @@ if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
           "$BRIEFING_DIR/.notify_count_gws-oauth"
     notify_slack ":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully."
 fi
+
+# === Claude token renewal reminder ===
+# The 1-year `claude setup-token` token expires silently; the auth alert only
+# fires after every cycle has already started failing. From 335 days after the
+# Keychain item was last written, email a renewal reminder at most once a week.
+# Age comes from the item's own mdat, so renewing (`security ... -U`) resets the
+# clock with no date to edit anywhere. Email, not just a banner: Focus modes
+# mute osascript banners and Slack is disabled. Placed after the gws check so
+# the send path is known-good.
+TOKEN_REMINDER_SENTINEL="$BRIEFING_DIR/.token_renewal_reminded"
+TOKEN_RENEW_AFTER_DAYS="${TOKEN_RENEW_AFTER_DAYS:-335}"
+remind_token_renewal() {
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 0
+    local mdat saved now age_days last expires my_email subject body resp
+    mdat=$(/usr/bin/security find-generic-password -a "$(id -un)" -s "$CLAUDE_TOKEN_KEYCHAIN_SERVICE" 2>/dev/null \
+        | sed -n 's/.*"mdat"<timedate>=0x[0-9A-Fa-f]*  *"\([0-9]\{14\}\)Z.*/\1/p')
+    [ -n "$mdat" ] || { log "WARN: token renewal check — couldn't read Keychain mdat."; return 0; }
+    saved=$(date -j -u -f '%Y%m%d%H%M%S' "$mdat" +%s 2>/dev/null) || return 0
+    now=$(date +%s)
+    age_days=$(( (now - saved) / 86400 ))
+    [ "$age_days" -ge "$TOKEN_RENEW_AFTER_DAYS" ] || return 0
+    last=$(cat "$TOKEN_REMINDER_SENTINEL" 2>/dev/null || echo 0)
+    [ $(( now - last )) -ge 604800 ] || return 0
+    expires=$(date -j -r $(( saved + 365 * 86400 )) '+%-d %b %Y')
+    my_email=$(sed -n 's/^MY_EMAIL=//p' "$HOME/.briefings_config" 2>/dev/null)
+    subject="Renew the Claude token for meeting-intelligence (expires ~${expires})"
+    body="<p>The scheduler's Claude token is ${age_days} days old and expires around <b>${expires}</b>. When it does, every briefing, follow-up and digest stops.</p>
+<p>In a normal Terminal window (not inside a Claude session):</p>
+<pre>claude setup-token
+security add-generic-password -U -a \"\$(id -un)\" -s ${CLAUDE_TOKEN_KEYCHAIN_SERVICE} -T /usr/bin/security -w</pre>
+<p>Copy the whole sk-ant-oat01- token (about 108 characters, widen the window so it doesn't wrap) and paste it twice. Renewing resets this reminder. It repeats weekly until then.</p>"
+    notify_macos "Meeting-Intelligence" "Claude token expires ~${expires}. Renew with claude setup-token (details in email)."
+    if [ -n "$my_email" ] && resp=$("$GWS" gmail +send --to "$my_email" --subject "$subject" --body "$body" --html 2>&1) \
+       && printf '%s' "$resp" | grep -q '"id"'; then
+        echo "$now" > "$TOKEN_REMINDER_SENTINEL"
+        log "Claude token is ${age_days} days old (expires ~${expires}) — renewal reminder emailed."
+    else
+        log "WARN: Claude token renewal reminder email failed — will retry next cycle. ${resp:0:200}"
+    fi
+}
+remind_token_renewal
 
 NEED_BRIEFING=0
 NEED_FOLLOWUP=0
