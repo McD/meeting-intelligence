@@ -206,7 +206,7 @@ REQUIRED = [
     f"Read({home}/Documents/*)",
     f"Read({home}/Desktop/*)",
     f"Read({home}/Downloads/*)",
-    f"Write({home}/Briefings/*)",
+    f"Edit({home}/Briefings/*)",  # Edit covers Write; bare Write() rules are ignored by the CLI
     "mcp__claude_ai_Gmail__search_threads",
     "mcp__claude_ai_Gmail__get_thread",
     "mcp__claude_ai_Gmail__list_labels",
