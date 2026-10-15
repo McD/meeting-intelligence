@@ -250,6 +250,80 @@ def main() -> int:
         recovered = query.search_decisions()
         check("recovered from corrupt cache", len(recovered) == second_count, f"recovered {len(recovered)}, expected {second_count}")
 
+        section("Disk cache freshness")
+        # reset_cache() stands in for a server restart: the next call must decide whether
+        # decisions.db still matches decisions.jsonl.
+        jsonl_path = ledger.LEDGER_PATH
+        index_module.reset_cache()
+        baseline = len(query.search_decisions(limit=500))
+        backup = tmpdir / "decisions.jsonl.bak"
+        shutil.copy2(jsonl_path, backup)  # keeps the older mtime, like a backup restore
+        time.sleep(0.05)
+        ledger.append(_make_decision("Entry the restore removes", ["frank@acme.com"], ["pricing"], days_ago=0))
+        check("append is visible before restore", len(query.search_decisions(limit=500)) == baseline + 1)
+        shutil.copy2(backup, jsonl_path)
+        index_module.reset_cache()
+        restored = len(query.search_decisions(limit=500))
+        check("restoring an older JSONL is not masked by a newer decisions.db", restored == baseline, f"got {restored}, expected {baseline}")
+
+        # An append that lands while a rebuild is reading the JSONL leaves a decisions.db
+        # written after the append but missing it. After a restart it must not be reused.
+        index_module.reset_cache()
+        time.sleep(0.05)
+        os.utime(jsonl_path)  # force the next call to rebuild rather than load from disk
+        real_populate = index_module._populate_from_jsonl
+        racing_entry = _make_decision("Appended mid-rebuild", ["gina@acme.com"], ["pricing"], days_ago=0)
+
+        def populate_then_append(conn):
+            n = real_populate(conn)
+            time.sleep(0.05)
+            ledger.append(racing_entry)
+            return n
+
+        index_module._populate_from_jsonl = populate_then_append
+        try:
+            _ = query.search_decisions(limit=500)
+        finally:
+            index_module._populate_from_jsonl = real_populate
+        index_module.reset_cache()
+        check(
+            "entry appended during a rebuild is visible after restart",
+            query.get_decision_by_id(racing_entry["id"]) is not None,
+        )
+
+        # The flip side: when nothing changed, a restart must load decisions.db rather than
+        # rebuild, or cold starts lose the fast path the disk cache exists for.
+        rebuilds = []
+
+        def counting_populate(conn):
+            rebuilds.append(1)
+            return real_populate(conn)
+
+        index_module._populate_from_jsonl = counting_populate
+        try:
+            index_module.reset_cache()
+            first = query.search_decisions(limit=500)
+            index_module.reset_cache()
+            second = query.search_decisions(limit=500)
+        finally:
+            index_module._populate_from_jsonl = real_populate
+        check("restart with an unchanged JSONL reuses decisions.db", rebuilds == [] and first == second, f"rebuilds={len(rebuilds)}")
+
+        # Each server process (one per Claude session) persists the cache; one must not
+        # delete or replace another's in-flight temp file.
+        other_tmp = index_module.DB_PATH.with_suffix(".db.tmp")
+        other_tmp.write_bytes(b"another process's half-written cache")
+        time.sleep(0.05)
+        os.utime(jsonl_path)
+        index_module.reset_cache()
+        _ = query.search_decisions()
+        check(
+            "persisting leaves another process's temp file alone",
+            other_tmp.exists() and other_tmp.read_bytes() == b"another process's half-written cache",
+        )
+        leftovers = sorted(p.name for p in tmpdir.glob("decisions.db.*tmp") if p != other_tmp)
+        check("persisting leaves no temp file of its own behind", leftovers == [], f"found {leftovers}")
+
     print()
     failed = [r for r in _results if not r[1]]
     print(f"=== {len(_results) - len(failed)}/{len(_results)} passed ===")

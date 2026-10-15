@@ -127,6 +127,13 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
   thread" until the server restarted. Present since v1 under fastmcp 3 as well;
   the 4.1 restart just exposed it. The connection is now shared across threads
   behind a lock; tool results are unchanged.
+- **The SQLite cache can no longer serve stale entries** (2026-10-15).
+  `decisions.db` now records the `decisions.jsonl` mtime it was built from and is
+  reused only on an exact match. Before, any cache newer than the JSONL was
+  trusted, so restoring an older backup, or an append landing mid-rebuild, could
+  leave the server serving the wrong entries until the next append. Each server
+  process also writes its own temp file, so two Claude sessions rebuilding at once
+  no longer break each other's save. An existing cache is rebuilt once on upgrade.
 - **Token expiry is flagged a month ahead** (2026-10-14). From 335 days after
   the Keychain token was last written (its own `mdat`, so renewing resets it),
   the scheduler emails a renewal reminder at most once a week, plus a banner.

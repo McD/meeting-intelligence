@@ -6,9 +6,11 @@ tools in `server.py`. The in-memory database is also persisted to ~/.briefings/d
 cold starts (the SIGTERM-on-spawn behavior in claude/claude-code#40207) stay sub-second on a
 fully-populated ledger.
 
-Invalidation is mtime-based: if the JSONL is newer than the disk cache or the disk cache is
-missing or corrupt, the index is rebuilt from JSONL via `executemany()` and the new state is
-written back to disk. Subsequent reads come from the in-memory copy.
+Invalidation is mtime-based: decisions.db records the JSONL mtime it was built from, and is
+loaded only when that matches the JSONL's current mtime exactly. Otherwise (JSONL changed,
+restored from an older backup, or the disk cache is missing, stale or corrupt) the index is
+rebuilt from JSONL via `executemany()` and the new state is written back to disk. Subsequent
+reads come from the in-memory copy.
 
 Threading: FastMCP runs sync tools on anyio worker threads, and a worker retires after ~10s
 idle, so consecutive calls routinely arrive on different threads. The cached connection is
@@ -53,6 +55,10 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS entries_created_at_idx ON entries(created_at);
 CREATE INDEX IF NOT EXISTS entries_type_idx       ON entries(type);
 CREATE INDEX IF NOT EXISTS entries_state_idx      ON entries(state);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 _INSERT_SQL = """
@@ -100,24 +106,32 @@ def _populate_from_jsonl(conn: sqlite3.Connection) -> int:
 def _persist_to_disk(mem_conn: sqlite3.Connection) -> None:
     """Atomically dump the in-memory db to ~/.briefings/decisions.db (mode 600)."""
     ledger._ensure_paths()  # guarantees ~/.briefings exists with mode 700
-    tmp_path = DB_PATH.with_suffix(".db.tmp")
+    # Each Claude session runs its own server process, so the temp name is per-process:
+    # a shared name let one process delete or promote another's half-written file.
+    tmp_path = DB_PATH.with_suffix(f".db.{os.getpid()}.tmp")
     if tmp_path.exists():
         tmp_path.unlink()
-    with ledger._restricted_umask():
-        disk_conn = sqlite3.connect(tmp_path)
     try:
-        mem_conn.backup(disk_conn)
-    finally:
-        disk_conn.close()
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, DB_PATH)
+        with ledger._restricted_umask():
+            disk_conn = sqlite3.connect(tmp_path)
+        try:
+            mem_conn.backup(disk_conn)
+        finally:
+            disk_conn.close()
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, DB_PATH)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
-def _load_from_disk_into_memory() -> Optional[sqlite3.Connection]:
+def _load_from_disk_into_memory(jsonl_mtime: int) -> Optional[sqlite3.Connection]:
     """Try to load the on-disk cache into a fresh in-memory connection.
 
-    Returns the in-memory connection on success, None if the disk file is missing or
-    corrupt — corruption gets logged and the caller falls back to rebuilding from JSONL.
+    Returns the in-memory connection when the disk cache was built from a JSONL with exactly
+    this mtime. Returns None if the file is missing, was built from a different JSONL state
+    (including caches written before the mtime was recorded), or is corrupt — corruption gets
+    logged and the file removed. The caller then rebuilds from JSONL.
     """
     if not DB_PATH.exists():
         return None
@@ -130,6 +144,13 @@ def _load_from_disk_into_memory() -> Optional[sqlite3.Connection]:
             disk_conn.close()
         # Light integrity probe — readable schema and the entries table is queryable.
         mem_conn.execute("SELECT COUNT(*) FROM entries").fetchone()
+        try:
+            row = mem_conn.execute("SELECT value FROM meta WHERE key = 'jsonl_mtime_ns'").fetchone()
+        except sqlite3.OperationalError:  # cache predates the meta table
+            row = None
+        if row is None or row[0] != str(jsonl_mtime):
+            mem_conn.close()
+            return None
         return mem_conn
     except sqlite3.DatabaseError as exc:
         logger.warning("SQLite cache at %s is corrupt (%s); rebuilding from JSONL", DB_PATH, exc)
@@ -142,8 +163,8 @@ def _load_from_disk_into_memory() -> Optional[sqlite3.Connection]:
 
 # Module-level cache: (mem_conn, jsonl_mtime_ns_when_built)
 _cache: Optional[tuple[sqlite3.Connection, int]] = None
-# Guards _cache, the connection it holds, and this process's decisions.db.tmp rebuild (it
-# does not coordinate separate server processes). Re-entrant so
+# Guards _cache and the connection it holds within this process (separate server processes
+# never share a connection, and each writes its own decisions.db.<pid>.tmp). Re-entrant so
 # code inside a `with connection()` block can still call get_connection() or reset_cache().
 _lock = threading.RLock()
 
@@ -152,13 +173,6 @@ def _jsonl_mtime_ns() -> int:
     """Return the JSONL file mtime in nanoseconds, or 0 if it does not exist yet."""
     try:
         return ledger.LEDGER_PATH.stat().st_mtime_ns
-    except FileNotFoundError:
-        return 0
-
-
-def _disk_mtime_ns() -> int:
-    try:
-        return DB_PATH.stat().st_mtime_ns
     except FileNotFoundError:
         return 0
 
@@ -196,9 +210,10 @@ def _get_connection_locked() -> sqlite3.Connection:
         cached_conn.close()
         _cache = None
 
-    # JSONL is the authority. If the disk cache is at least as new, we can load it directly.
-    if jsonl_mtime > 0 and _disk_mtime_ns() >= jsonl_mtime:
-        mem_conn = _load_from_disk_into_memory()
+    # JSONL is the authority. Reuse the disk cache only if it was built from this exact JSONL
+    # state; comparing file mtimes instead let a newer-but-stale decisions.db win.
+    if jsonl_mtime > 0:
+        mem_conn = _load_from_disk_into_memory(jsonl_mtime)
         if mem_conn is not None:
             _cache = (mem_conn, jsonl_mtime)
             return mem_conn
@@ -207,6 +222,12 @@ def _get_connection_locked() -> sqlite3.Connection:
     mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
     _create_schema(mem_conn)
     n = _populate_from_jsonl(mem_conn)
+    # Tag with the mtime read *before* populating: if the JSONL changed mid-read, the tag
+    # won't match the new mtime and the next load rebuilds rather than trusting this copy.
+    mem_conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('jsonl_mtime_ns', ?)", (str(jsonl_mtime),)
+    )
+    mem_conn.commit()
     logger.info("Rebuilt SQLite index from JSONL (%d entries)", n)
     if jsonl_mtime > 0:
         _persist_to_disk(mem_conn)
