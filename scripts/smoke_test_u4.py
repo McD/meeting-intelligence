@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import date, datetime, timezone
@@ -169,6 +170,68 @@ def main() -> int:
         ledger.append(_make_decision("New pricing decision", ["carol@acme.com"], ["pricing"], days_ago=0))
         second_count = len(query.search_decisions())
         check("post-append result count increases", second_count == first_count + 1, f"{first_count} -> {second_count}")
+
+        section("Calls from more than one thread")
+        # fastmcp runs sync tools on anyio worker threads, and a worker retires after ~10s
+        # idle, so consecutive tool calls routinely arrive on different threads. Each call
+        # below runs on a fresh thread after the main thread has already warmed the cache.
+        index_module.reset_cache()
+        _ = query.search_decisions()
+        thread_results: list = []
+
+        def _call_in_new_thread(fn, *args) -> None:
+            def run() -> None:
+                try:
+                    thread_results.append(("ok", fn(*args)))
+                except Exception as exc:  # noqa: BLE001 — record any failure for the check
+                    thread_results.append(("error", f"{type(exc).__name__}: {exc}"))
+            t = threading.Thread(target=run)
+            t.start()
+            t.join()
+
+        _call_in_new_thread(query.search_decisions)
+        _call_in_new_thread(query.get_decision_by_id, known["id"])
+        _call_in_new_thread(query.list_attendees)
+        errors = [r[1] for r in thread_results if r[0] == "error"]
+        check("tool calls on other threads raise no errors", not errors, errors[0] if errors else "")
+        if not errors:
+            check("search from another thread returns every entry", len(thread_results[0][1]) == second_count, f"got {len(thread_results[0][1])}")
+            check("get_decision_by_id from another thread round-trips", thread_results[1][1]["id"] == known["id"])
+            check("list_attendees from another thread matches main thread", thread_results[2][1] == query.list_attendees())
+
+        # mtime invalidation triggered from a worker thread must close/replace the cached
+        # connection without tripping the same-thread check, and the new row must show up.
+        time.sleep(0.05)
+        ledger.append(_make_decision("Threaded pricing decision", ["dave@acme.com"], ["pricing"], days_ago=0))
+        second_count += 1
+        thread_results.clear()
+        _call_in_new_thread(query.search_decisions)
+        status, payload = thread_results[0]
+        check("mtime invalidation works from another thread", status == "ok" and len(payload) == second_count, str(payload)[:200] if status == "error" else f"got {len(payload)}")
+
+        # The lock must serialise queries against invalidation: while one thread holds the
+        # connection, a search on another thread waits, then sees the ledger as it is after
+        # the holder finishes rather than reading from a connection being closed under it.
+        thread_results.clear()
+        with index_module.connection():
+            waiter = threading.Thread(target=lambda: thread_results.append(len(query.search_decisions())))
+            waiter.start()
+            waiter.join(timeout=0.3)
+            check("search on another thread waits while the connection is held", waiter.is_alive() and thread_results == [])
+            time.sleep(0.05)
+            ledger.append(_make_decision("Locked-window decision", ["erin@acme.com"], ["pricing"], days_ago=0))
+            second_count += 1
+        waiter.join()
+        check("waiting search returns the post-append count", thread_results == [second_count], f"got {thread_results}")
+
+        # Concurrent calls: several threads hitting the index at once.
+        thread_results.clear()
+        workers = [threading.Thread(target=lambda: thread_results.append(len(query.search_decisions()))) for _ in range(8)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+        check("8 concurrent searches all succeed", thread_results == [second_count] * 8, f"got {thread_results}")
 
         section("Corrupted SQLite cache rebuild")
         # Force a clean persist so DB_PATH exists.

@@ -44,9 +44,6 @@ def search_decisions(
     match (case-insensitive); type, state, and date bounds are exact. ISO `created_at` strings
     sort lexicographically, so date_from/date_to comparisons are direct string comparisons.
     """
-    conn = index_module.get_connection()
-    conn.row_factory = sqlite3.Row
-
     clauses: list[str] = []
     params: list = []
 
@@ -74,16 +71,18 @@ def search_decisions(
     sql = f"SELECT raw FROM entries{where} ORDER BY created_at DESC LIMIT ?"
     params.append(_clamp(limit, 50))
 
-    return [index_module.entry_from_row(row) for row in conn.execute(sql, params)]
+    with index_module.connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [index_module.entry_from_row(row) for row in conn.execute(sql, params)]
 
 
 def get_decision_by_id(id: str) -> Optional[dict]:
     """Return a single entry by its UUID, or None when no entry matches."""
     if not id:
         return None
-    conn = index_module.get_connection()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT raw FROM entries WHERE id = ?", (id,)).fetchone()
+    with index_module.connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT raw FROM entries WHERE id = ?", (id,)).fetchone()
     return index_module.entry_from_row(row) if row else None
 
 
@@ -95,13 +94,13 @@ def list_attendees(limit: Optional[int] = 100) -> list[dict]:
     index; we re-aggregate here rather than maintaining a second table because the projected
     attendee cardinality is small (low hundreds at v1 scale).
     """
-    conn = index_module.get_connection()
     counter: Counter[str] = Counter()
-    for (flat,) in conn.execute("SELECT attendees_flat FROM entries"):
-        if not flat:
-            continue
-        for token in flat.split():
-            counter[token] += 1
+    with index_module.connection() as conn:
+        for (flat,) in conn.execute("SELECT attendees_flat FROM entries"):
+            if not flat:
+                continue
+            for token in flat.split():
+                counter[token] += 1
 
     capped = _clamp(limit, 100)
     return [

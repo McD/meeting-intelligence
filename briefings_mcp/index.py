@@ -9,6 +9,11 @@ fully-populated ledger.
 Invalidation is mtime-based: if the JSONL is newer than the disk cache or the disk cache is
 missing or corrupt, the index is rebuilt from JSONL via `executemany()` and the new state is
 written back to disk. Subsequent reads come from the in-memory copy.
+
+Threading: FastMCP runs sync tools on anyio worker threads, and a worker retires after ~10s
+idle, so consecutive calls routinely arrive on different threads. The cached connection is
+opened with check_same_thread=False and every use goes through `connection()`, which holds
+one module lock so a rebuild or close never overlaps a query on another thread.
 """
 
 from __future__ import annotations
@@ -17,8 +22,10 @@ import json
 import logging
 import os
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from . import ledger
 
@@ -117,7 +124,7 @@ def _load_from_disk_into_memory() -> Optional[sqlite3.Connection]:
     try:
         disk_conn = sqlite3.connect(DB_PATH)
         try:
-            mem_conn = sqlite3.connect(":memory:")
+            mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
             disk_conn.backup(mem_conn)
         finally:
             disk_conn.close()
@@ -135,6 +142,10 @@ def _load_from_disk_into_memory() -> Optional[sqlite3.Connection]:
 
 # Module-level cache: (mem_conn, jsonl_mtime_ns_when_built)
 _cache: Optional[tuple[sqlite3.Connection, int]] = None
+# Guards _cache, the connection it holds, and this process's decisions.db.tmp rebuild (it
+# does not coordinate separate server processes). Re-entrant so
+# code inside a `with connection()` block can still call get_connection() or reset_cache().
+_lock = threading.RLock()
 
 
 def _jsonl_mtime_ns() -> int:
@@ -158,7 +169,22 @@ def get_connection() -> sqlite3.Connection:
     Cheap on the hot path: if JSONL hasn't changed since the cached connection was built,
     the same connection is returned. Otherwise the index is reloaded from the disk cache
     (when fresh) or rebuilt from JSONL (when stale or corrupt) and re-persisted to disk.
+
+    Callers that query the connection should use `connection()` instead, so the lock is
+    held until they finish reading.
     """
+    with _lock:
+        return _get_connection_locked()
+
+
+@contextmanager
+def connection() -> Iterator[sqlite3.Connection]:
+    """Yield the current connection with the index lock held for the whole query."""
+    with _lock:
+        yield _get_connection_locked()
+
+
+def _get_connection_locked() -> sqlite3.Connection:
     global _cache
 
     jsonl_mtime = _jsonl_mtime_ns()
@@ -178,7 +204,7 @@ def get_connection() -> sqlite3.Connection:
             return mem_conn
 
     # Rebuild from JSONL.
-    mem_conn = sqlite3.connect(":memory:")
+    mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
     _create_schema(mem_conn)
     n = _populate_from_jsonl(mem_conn)
     logger.info("Rebuilt SQLite index from JSONL (%d entries)", n)
@@ -192,9 +218,10 @@ def get_connection() -> sqlite3.Connection:
 def reset_cache() -> None:
     """Drop the in-memory connection. Test seam; production calls go through get_connection."""
     global _cache
-    if _cache is not None:
-        _cache[0].close()
-        _cache = None
+    with _lock:
+        if _cache is not None:
+            _cache[0].close()
+            _cache = None
 
 
 def entry_from_row(row: sqlite3.Row | tuple) -> dict:

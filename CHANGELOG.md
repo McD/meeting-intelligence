@@ -120,6 +120,13 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 
 ### Fixed
 
+- **MCP tools no longer fail after 10 seconds idle** (2026-10-15). FastMCP runs
+  tools on worker threads that retire after 10s idle, and the cached in-memory
+  SQLite connection was tied to the thread that built it, so any later call
+  failed with "SQLite objects created in a thread can only be used in that same
+  thread" until the server restarted. Present since v1 under fastmcp 3 as well;
+  the 4.1 restart just exposed it. The connection is now shared across threads
+  behind a lock; tool results are unchanged.
 - **Token expiry is flagged a month ahead** (2026-10-14). From 335 days after
   the Keychain token was last written (its own `mdat`, so renewing resets it),
   the scheduler emails a renewal reminder at most once a week, plus a banner.
