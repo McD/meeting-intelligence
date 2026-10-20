@@ -410,13 +410,13 @@ Tell the user where the file was saved and give a 2-3 line summary of what's in 
 
 After saving and quality-checking, deliver via both channels:
 
-**Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`. Use the **same renderer** as `commands/follow-up.md` Step 6 and `commands/digest.md` Step 5 — handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Consistency across every email this system sends is intentional; do not improvise a different renderer here. Capture the `gws gmail +send` JSON response so the `threadId` is available for the awaiting-reply state file below:
+**Email** — convert markdown to HTML and send to `$MY_EMAIL` using `--html`. Use the **same renderer** as `commands/follow-up.md` Step 6 and `commands/digest.md` Step 5 — handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Consistency across every email this system sends is intentional; do not improvise a different renderer here. Send with the self-only helper, which renders the markdown with that renderer. Run it as a standalone command, with no `VAR=$(...)` wrapper or pipe; that single shape matches a narrow permission rule, where the compound form fell through to auto mode's classifier and was blocked on 2026-10-20:
 
 ```bash
-HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$BRIEFING_FILE")
-SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --body "$HTML" --html)
-THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
+~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "Briefing: [Meeting title] — [Day Date e.g. Thu 2 Apr] [Start time]" --markdown-file ~/Briefings/<briefing file>.md
 ```
+
+It prints JSON; its `threadId` is `THREAD_ID` for the awaiting-reply state file below. A non-zero exit means nothing was sent: log it to `~/Briefings/scheduler.log` and say so in your summary.
 
 **Slack** — convert the briefing to Slack mrkdwn before posting (do NOT wrap in a code block). Check if the webhook URL is configured:
 ```bash

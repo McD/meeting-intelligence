@@ -341,18 +341,15 @@ The age-and-due rendering format: `*(open N days)*` if no due date, `*(open N da
 
 **Email** — to `$MY_EMAIL` using `--html`, subject: `Actions tracker — <Day> <DD Mon> <YYYY>`. Convert the markdown to HTML using the exact Python snippet below — same renderer as `commands/follow-up.md` Step 6, handles `**bold**`, `*italic*`, `[link](url)`, bulleted lists (`- item`), and numbered lists (`1. item`). Do not improvise a different renderer; the digest's italic styling (`*Period themes:*`, `*(open N days)*`, `*done?*`) and numbered lists depend on this behaviour.
 
+Send with the self-only helper, which renders the markdown with that same renderer. Run it as a standalone command, with no `VAR=$(...)` wrapper or pipe: that single shape matches a narrow permission rule, and the compound form fell through to auto mode's classifier and was blocked on 2026-10-20.
+
 ```bash
-HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$DIGEST_FILE")
-SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Actions tracker — $(date '+%A %-d %b %Y')" --body "$HTML" --html)
-THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
-SEND_MSG_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
-if [ -z "$SEND_MSG_ID" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: digest send failed — no message id from gws. Response: $(printf '%s' "$SEND_RESPONSE" | head -c 300)" >> ~/Briefings/scheduler.log
-    exit 1
-fi
-# The only "delivered" signal. Scheduler gate, Step 0 and ~/Health/liveness.sh all key on it.
-printf '%s\n' "$SEND_MSG_ID" > "${DIGEST_FILE%.md}.sent"
+~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "Actions tracker — <Day> <DD Mon> <YYYY>" --markdown-file ~/Briefings/<YYYY-MM-DD>-1000-digest.md
 ```
+
+It prints JSON on success: `threadId` is `THREAD_ID` and `id` is `SEND_MSG_ID`. Then write the marker with the Write tool: `~/Briefings/<YYYY-MM-DD>-1000-digest.sent` containing the `SEND_MSG_ID` and a newline. It is the only "delivered" signal; the scheduler gate, Step 0 and `~/Health/liveness.sh` all key on it.
+
+If the helper exits non-zero (or prints no `id`), log `ERROR: digest send failed — <its stderr, first 300 chars>` to `~/Briefings/scheduler.log`.
 
 If the send fails, stop here with a non-zero exit and say so in the final output. Do not write the `.sent` marker or the awaiting-digest file. The next scheduler cycle before 18:00 retries.
 

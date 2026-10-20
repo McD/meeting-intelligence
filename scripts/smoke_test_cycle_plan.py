@@ -376,6 +376,29 @@ print(json.dumps({'messages': msgs}))
     r3 = json.loads(run_att("ATTENTION: plan disagrees with calendar\n").stdout)
     check("attention cli: after --mark-sent the repeat is suppressed", (r3["send"], len(r3["suppressed"])), ([], 1))
 
+
+# ── briefings_mcp.send: self-only email helper ───────────────────────────────
+from briefings_mcp import send as snd  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    root = Path(td) / "Briefings"; (root / ".outbox").mkdir(parents=True)
+    ok_file = root / ".outbox" / "x.html"; ok_file.write_text("<p>hi</p>")
+    outside = Path(td) / "secret.txt"; outside.write_text("nope")
+    (root / ".outbox" / "link.html").symlink_to(outside)
+    check("send: body under ~/Briefings accepted", snd.body_path(str(ok_file), root) == ok_file.resolve(), True)
+    for name, path in [("outside file", outside), ("symlink escaping the root", root / ".outbox" / "link.html"),
+                       ("dot-dot escape", root / ".outbox" / ".." / ".." / "secret.txt")]:
+        try:
+            snd.body_path(str(path), root); got = "accepted"
+        except snd.Refused:
+            got = "refused"
+        check(f"send: {name} refused", got, "refused")
+for frm, want in [(f"Me <{MY}>", "ok"), (f"<{MY.upper()}>", "ok"), ("Eve <eve@evil.example>", "refused"), ("", "refused")]:
+    try:
+        snd.check_reply_target(frm, MY); got = "ok"
+    except snd.Refused:
+        got = "refused"
+    check(f"send: reply target {frm or '(empty)'!r}", got, want)
+
 # ── report ────────────────────────────────────────────────────────────────────
 failed = [r for r in results if not r[1]]
 for name, ok, detail in results:

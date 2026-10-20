@@ -199,6 +199,12 @@ REQUIRED = [
     "Bash(ls *)", "Bash(find *)", "Bash(grep *)", "Bash(mv *)",
     "Bash(chmod *)", "Bash(cat *)", "Bash(readlink *)", "Bash(echo *)",
     "Bash(sqlite3 *)",
+    # Self-only email helper (briefings_mcp/send.py). Narrow on purpose: it can only
+    # email MY_EMAIL or reply to MY_EMAIL's own messages, so it is safe to pre-approve,
+    # and pre-approving it keeps auto mode's classifier from blocking reply sends
+    # (2026-10-20). Both path forms, because the rule matches the typed command.
+    "Bash(~/.briefings/venv/bin/python3 -m briefings_mcp.send *)",
+    f"Bash({home}/.briefings/venv/bin/python3 -m briefings_mcp.send *)",
     f"Read({home}/.briefings_config)",
     f"Read({home}/.slack_webhook)",
     f"Read({home}/Briefings/*)",

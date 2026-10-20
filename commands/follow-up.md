@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-10-20b — Step 0 and Step 1 now run and obey `briefings_mcp.cycle_plan` (real-meeting filter, dedup, transcript grace, per-thread reply checks, expiry all in code, with a by-hand fallback if it fails); filenames come from the plan so the next dedup check finds them; transcript-request `extend` now writes a watermark so it stops re-extending every cycle; the awaiting-digest basename (no trailing dash) is dispatched correctly. Previous: 2026-10-20 — Step 1 dedup guard escalated from prose `ls` to an exact-path `[ -e ]` code block that prints DEDUP: SKIP/PROCEED; a 2026-10-20 cycle had widened the prose check to a glob and let a 1:1's pre-meeting briefing file suppress its follow-up. Previous: 2026-10-14 — threaded replies (expand:/quote:/research: responses and digest acks) switch from `gws gmail +send --thread-id`, which gws 0.22 removed, to `gws gmail +reply --message-id`. Log lines must use local time. Previous: 2026-07-02 — Step 0 invariant hardened after actions-tracker reply landed 09:42Z and no cycle picked it up until 15:00+ (host-sleep suppressed several cycles; the one cycle that ran cleanly at 10:45 logged "Step 0 dispatch is on the 15-min scheduler cadence — no files past their TTL, none needed manual attention" and skipped Step 0 entirely). Also called out an invented "delta gate" (`from:$MY_EMAIL newer_than:1h`) that has been silently short-circuiting per-file thread checks for weeks. Neither shortcut is in the skill. Step 0 now opens with a Non-negotiable invariant block that bans both misreads and permits the optimization only under strict conditions. Previous: 2026-06-24b — inline-transcript detector for `expand:` / `quote:` drops the line-count gate; ≥500 chars after stripping is the only threshold. A 28k-char transcript pasted as a single unbroken paragraph (Apple Mail-style collapse) was failing the prior ≥10-lines requirement. 2026-06-24 — Step 5 `expand:` and `quote:` branches now accept an inline-pasted transcript before falling back to `transcript_source`, closing the bug where briefing-thread `expand:` replies got the "needs a meeting transcript" error because `transcript_source` is empty for briefings. Previous: 2026-06-11 — Step 1 gains a real-meeting filter: skip events with no co-attendees, declined invites, and non-`default` eventTypes (workingLocation, outOfOffice, focusTime, birthday). Closes the bug where recurring solo blocks like `Lunch` fired daily transcript-request emails. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Earlier: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-10-20c — every email to $MY_EMAIL (follow-ups, transcript requests, expand/quote/research replies, digest acks) goes through `briefings_mcp.send` as one standalone command matching a narrow permission rule; the compound heredoc + `$(cat)` + `gws +reply` form was blocked by the auto-mode classifier on 2026-10-20. Previous: 2026-10-20b — Step 0 and Step 1 now run and obey `briefings_mcp.cycle_plan` (real-meeting filter, dedup, transcript grace, per-thread reply checks, expiry all in code, with a by-hand fallback if it fails); filenames come from the plan so the next dedup check finds them; transcript-request `extend` now writes a watermark so it stops re-extending every cycle; the awaiting-digest basename (no trailing dash) is dispatched correctly. Previous: 2026-10-20 — Step 1 dedup guard escalated from prose `ls` to an exact-path `[ -e ]` code block that prints DEDUP: SKIP/PROCEED; a 2026-10-20 cycle had widened the prose check to a glob and let a 1:1's pre-meeting briefing file suppress its follow-up. Previous: 2026-10-14 — threaded replies (expand:/quote:/research: responses and digest acks) switch from `gws gmail +send --thread-id`, which gws 0.22 removed, to `gws gmail +reply --message-id`. Log lines must use local time. Previous: 2026-07-02 — Step 0 invariant hardened after actions-tracker reply landed 09:42Z and no cycle picked it up until 15:00+ (host-sleep suppressed several cycles; the one cycle that ran cleanly at 10:45 logged "Step 0 dispatch is on the 15-min scheduler cadence — no files past their TTL, none needed manual attention" and skipped Step 0 entirely). Also called out an invented "delta gate" (`from:$MY_EMAIL newer_than:1h`) that has been silently short-circuiting per-file thread checks for weeks. Neither shortcut is in the skill. Step 0 now opens with a Non-negotiable invariant block that bans both misreads and permits the optimization only under strict conditions. Previous: 2026-06-24b — inline-transcript detector for `expand:` / `quote:` drops the line-count gate; ≥500 chars after stripping is the only threshold. A 28k-char transcript pasted as a single unbroken paragraph (Apple Mail-style collapse) was failing the prior ≥10-lines requirement. 2026-06-24 — Step 5 `expand:` and `quote:` branches now accept an inline-pasted transcript before falling back to `transcript_source`, closing the bug where briefing-thread `expand:` replies got the "needs a meeting transcript" error because `transcript_source` is empty for briefings. Previous: 2026-06-11 — Step 1 gains a real-meeting filter: skip events with no co-attendees, declined invites, and non-`default` eventTypes (workingLocation, outOfOffice, focusTime, birthday). Closes the bug where recurring solo blocks like `Lunch` fired daily transcript-request emails. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Earlier: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -19,6 +19,13 @@ Delivery scope: only ever send email output to `$MY_EMAIL` or to attendees liste
 - **Never use osascript, AppleScript, or Apple Mail.app** — use `gws` tools only for email and calendar access
 - **Log lines use local time.** Append to `~/Briefings/scheduler.log` with `echo "[$(date '+%Y-%m-%d %H:%M')] <message>" >> ~/Briefings/scheduler.log`. Never `date -u` or a hand-typed timestamp; the scheduler's own lines are local, and mixed zones made the 2026-10-14 log read an hour out of order.
 - **Never use osascript to access Calendar** — use the Google Calendar MCP instead
+- **Email to yourself goes through the send helper, as one standalone command.** Write the body with the Write tool to `~/Briefings/.outbox/<descriptive-name>.html` (or `.txt`), never with a shell heredoc, then run exactly one of:
+  ```bash
+  ~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "<subject>" --html-file ~/Briefings/.outbox/<name>.html
+  ~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "<subject>" --markdown-file ~/Briefings/<saved-file>.md
+  ~/.briefings/venv/bin/python3 -m briefings_mcp.send reply --message-id "<message id>" --html-file ~/Briefings/.outbox/<name>.html
+  ```
+  (`--text-file` for plain text.) Run it on its own: no `VAR=$(...)` wrapper, no pipe, no `&&`, no heredoc in the same call. Read `id` and `threadId` from the JSON it prints. That one shape matches a narrow permission rule; the compound `cat > file <<EOF … $(cat file) | gws …` form fell through to auto mode's classifier and was blocked (2026-10-20, an `expand:` reply). The helper only ever emails `$MY_EMAIL`, `reply` refuses unless the message being answered was sent by `$MY_EMAIL`, and body files must be under `~/Briefings/`. Plain `gws gmail +send` is for mail to other people only (digest `send:` nudges). Exit 2 means refused, exit 1 means the send failed; log either and continue.
 - **Never run `find` against `/` (or any other root path)** — full-filesystem scans hit Time Machine, iCloud Drive, and external volumes and can take 15+ minutes from inside Bash, blowing the scheduler's watchdog and posting needless Slack alerts. Search from a specific subtree. Canonical paths you should never need to discover at runtime:
   - State files (awaiting/follow-up/digest/audit): `~/Briefings/`
   - Ledger MCP source: `~/.briefings/briefings_mcp/` (repo mirror at `~/Sites/meeting-intelligence/briefings_mcp/`)
@@ -148,7 +155,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
 
 5. **Parse the first command line.** Take the first non-empty, non-quoted line of the reply body (strip `>`-prefixed quoted-original lines first — same convention as the transcript-request branch). Lowercase the keyword prefix only (preserve case in any argument that follows).
 
-   **Convention every send-branch below follows.** When a branch sends an email via `gws gmail +send`, capture the response's `id` field into `BOT_REPLY_MESSAGE_ID`. The Step 5b atomic rewrite consumes this variable and appends it to `bot_sent_ids`, so the next dispatcher cycle silently skips the bot's own message instead of trying to parse it as a user reply. Branches that send no email (e.g., `extend`, `cancel`) set `BOT_REPLY_MESSAGE_ID=""` and the array is preserved unchanged.
+   **Convention every send-branch below follows.** When a branch sends an email (through the send helper, see Rules), capture the response's `id` field into `BOT_REPLY_MESSAGE_ID`. The Step 5b atomic rewrite consumes this variable and appends it to `bot_sent_ids`, so the next dispatcher cycle silently skips the bot's own message instead of trying to parse it as a user reply. Branches that send no email (e.g., `extend`, `cancel`) set `BOT_REPLY_MESSAGE_ID=""` and the array is preserved unchanged.
 
    Match against:
 
@@ -161,7 +168,7 @@ These state files were written by Step 6 of a prior follow-up run. Each one poin
      2. **Otherwise fetch from `transcript_source`** using the same five-branch logic as Step 2 (Google Doc via `gws drive`, Gmail thread via `gws gmail`, local `file://` via direct read).
      3. If neither path yields a transcript (no substantial inline body AND fetch fails: 404, file missing, or `transcript_source` is empty — the normal case for briefing-thread replies that don't paste a transcript), send an email reply to `$thread_id` saying "`expand:` needs a meeting transcript, and this thread doesn't have one yet (either the meeting hasn't happened, or the original transcript is no longer reachable at `<transcript_source>`). Paste a transcript inline below an `expand:` line if you want to use one from a different meeting, try `research: <query>` for web research instead, or `cancel` to drop this thread." Log a one-line WARN.
      4. Otherwise, run a focused Claude pass with the transcript as context and the user's `<request>` as the instruction. Aim for 200–800 words unless the request explicitly asks for more. Format as plain prose or short bulleted lists — match the spirit of the ask. Don't add scaffolding (no executive summaries, table of contents, or meta-commentary).
-     5. Send the result as an email reply to the same thread: `gws gmail +reply --message-id "$last_message_id" --body "$RESULT_HTML" --html` (`+reply` threads automatically; `gws gmail +send` has no `--thread-id` flag since gws 0.22). Also Slack-mirror if `~/.slack_webhook` exists.
+     5. Send the result as an email reply to the same thread: write it to `~/Briefings/.outbox/`, then `~/.briefings/venv/bin/python3 -m briefings_mcp.send reply --message-id "$last_message_id" --html-file ~/Briefings/.outbox/<name>.html` (it threads automatically). Also Slack-mirror if `~/.slack_webhook` exists.
      6. Log `"Expand request handled for [meeting]: [first 60 chars of request]"` (and append `" (inline transcript, N chars)"` when step 1 fired instead of step 2, so the log distinguishes the two paths).
 
    - `research: <query>` — web research on a topic, person, or company. Does **not** require a transcript; works on every awaiting-reply file (briefing, follow-up, or any future email type). Steps:
@@ -226,14 +233,13 @@ print(json.dumps(ids))
 
    Never overwrite the state file in place with `cat > $AWAITING_FILE`. A crash mid-write would truncate `thread_id` / `transcript_source` / `created_at` and leave the next cycle unable to act on the meeting at all. The tmp+rename pattern is atomic on POSIX: either the new file fully exists or the old one does.
 
-   **`$BOT_REPLY_MESSAGE_ID` capture convention.** Every send-branch in Step 5 (`expand:`, `quote:`, `research:`, and the "Anything else" unrecognized branch) MUST capture the `id` field from `gws gmail +send`'s response JSON before flowing into Step 5b. The pattern mirrors how `$THREAD_ID` is captured in Step 7 of the new-follow-up flow:
+   **`$BOT_REPLY_MESSAGE_ID` capture convention.** Every send-branch in Step 5 (`expand:`, `quote:`, `research:`, and the "Anything else" unrecognized branch) MUST capture the `id` field of the reply before flowing into Step 5b. Send with the helper as a standalone command (see Rules):
 
    ```bash
-   # Thread replies use +reply against the user message being processed. gws 0.22 dropped
-   # `+send --thread-id`; +reply sets In-Reply-To/References/threadId itself.
-   SEND_RESPONSE=$(gws gmail +reply --message-id "$last_message_id" --body "$BODY" --html)
-   BOT_REPLY_MESSAGE_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
+   ~/.briefings/venv/bin/python3 -m briefings_mcp.send reply --message-id "<last_message_id>" --html-file ~/Briefings/.outbox/<name>.html
    ```
+
+   It prints JSON; its `id` is `BOT_REPLY_MESSAGE_ID`. If it exits non-zero, nothing was sent: log `WARN: reply not sent for [meeting] — <stderr>`, skip Step 5b for this file (so the reply is retried next cycle), and add an `ATTENTION:` line if the error is a refusal or a permission block.
 
    For branches that send no reply (e.g., `extend` which only rewrites `created_at`), set `BOT_REPLY_MESSAGE_ID=""` before Step 5b. The state-file rewrite leaves `bot_sent_ids` unchanged in that case.
 
@@ -378,8 +384,8 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 **Implementation notes:**
 - The Python heredoc that wraps `update_commitment_state` should mirror the existing scheduler.sh:81 pattern: pass UUIDs via env var, call the function, emit JSON status.
 - Multiple keywords on separate lines (`done: 1\nmore: 2`) — only the FIRST keyword line is processed on this cycle, same as the awaiting-reply branch. User can re-reply with the rest.
-- Acks always go to the digest thread (`gws gmail +reply --message-id "$last_message_id" --body "$HTML" --html`, replying to the user's digest reply; `+send --thread-id` no longer exists).
-- If `gws gmail +send` fails for the ack itself, log to scheduler.log and continue — the state changes already landed in the ledger; the missing ack is a degraded user experience, not data loss.
+- Acks always go to the digest thread through the send helper: `~/.briefings/venv/bin/python3 -m briefings_mcp.send reply --message-id "<last_message_id>" --html-file ~/Briefings/.outbox/<name>.html`, replying to the user's digest reply.
+- If the send fails for the ack itself, log to scheduler.log and continue — the state changes already landed in the ledger; the missing ack is a degraded user experience, not data loss.
 
 ---
 
@@ -532,9 +538,9 @@ If no transcript is found after all five checks, the plan's `transcript_request_
 
      If the transcript is just slow (and you'd like another 7 days to find/paste it), reply with "extend".
      ```
-     Use `gws gmail +send --to "$MY_EMAIL"` (plain text, no `--html` needed)
+     Write it to `~/Briefings/.outbox/transcript-request-<slug>.txt` and send with `~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "<subject>" --text-file ~/Briefings/.outbox/transcript-request-<slug>.txt` (a standalone command; see Rules).
 
-  3. Capture the `threadId` from the `gws gmail +send` JSON response.
+  3. Capture the `threadId` from the JSON the helper prints.
 
   4. Create `~/Briefings/<awaiting_file>` (the plan's `awaiting_file`, e.g. `2026-10-20-1030-awaiting-alex-sam-fortnightly-1-1.md`) with this exact content:
      ```
@@ -810,15 +816,13 @@ Send via both channels. Email is sent first because its `threadId` is needed for
 
 **Email** — to $MY_EMAIL using `--html`, subject: `Follow-up: [Meeting title] ([date])`. Capture the JSON response so the `threadId` is available below.
 
-Convert markdown to HTML using this exact Python snippet (save the follow-up file first, then run):
+Save the follow-up file first, then send it with the helper, which renders the markdown with `briefings_mcp.render` itself. Run it as a standalone command (see Rules):
 
 ```bash
-HTML=$(~/.briefings/venv/bin/python3 -m briefings_mcp.render "$FOLLOWUP_FILE")
-SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
-THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
+~/.briefings/venv/bin/python3 -m briefings_mcp.send self --subject "Follow-up: [Meeting title] ([date])" --markdown-file ~/Briefings/<followup_file>
 ```
 
-`FOLLOWUP_FILE` must be set to the path of the follow-up `.md` file saved in Step 5. `$THREAD_ID` is used in the awaiting-reply step below; the existing transcript-request flow captures `threadId` the same way (Step 2).
+It prints JSON: `threadId` is `THREAD_ID` and `id` is `INITIAL_MESSAGE_ID`, both used in the awaiting-reply step below. Send once; the awaiting-reply step reuses this response.
 
 **Slack** — if `~/.slack_webhook` exists, convert to mrkdwn and POST:
 
@@ -833,12 +837,11 @@ fi
 
 `FOLLOWUP_FILE` must be set to the path of the follow-up `.md` file saved in Step 5. If `~/.slack_webhook` is not found, skip silently.
 
-**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `research:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write. Capture BOTH the thread-id and the follow-up email's own message-id from the `gws gmail +send` response — the message-id seeds `bot_sent_ids` so Step 0's dispatcher knows the initial follow-up email is one of the bot's own sends (not a user reply to mis-parse):
+**Awaiting-reply state file.** Record the pending state so the scheduler can pick up `expand:`, `quote:`, `research:`, `cancel`, or `extend` replies on the next 15-minute cycle. Every follow-up creates one (no high-stakes gate — the reply-keyword affordance is universal). Use the same atomic tmp+rename pattern as Step 0's Step 5b watermark write. Use BOTH the thread-id and the follow-up email's own message-id from the helper's JSON in the Email step (do not send again). The message-id seeds `bot_sent_ids` so Step 0's dispatcher knows the initial follow-up email is one of the bot's own sends (not a user reply to mis-parse):
 
 ```bash
-SEND_RESPONSE=$(gws gmail +send --to "$MY_EMAIL" --subject "Follow-up: [Meeting title] ([date])" --body "$HTML" --html)
-THREAD_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('threadId',''))")
-INITIAL_MESSAGE_ID=$(printf '%s' "$SEND_RESPONSE" | python3 -c "import sys,json; raw=sys.stdin.read(); b=raw.find('{'); print((json.loads(raw[b:]) if b>=0 else {}).get('id',''))")
+THREAD_ID="<threadId from the send helper's JSON>"
+INITIAL_MESSAGE_ID="<id from the send helper's JSON>"
 
 umask 077
 AWAITING_REPLY=~/Briefings/YYYY-MM-DD-HHmm-awaiting-reply-slug.md
