@@ -202,6 +202,20 @@ else
     fail "smoke_test_dedup.py" "no Python venv available"
 fi
 
+# ── 4c. Cycle plan, ATTENTION triage, weekly health email ───────────────────
+section "4c. Cycle plan (briefings_mcp.cycle_plan / attention / health)"
+
+if [ -n "$TEST_PY" ]; then
+    if "$TEST_PY" "$SCRIPT_DIR/scripts/smoke_test_cycle_plan.py" >/tmp/cycle_plan_smoke.out 2>&1; then
+        pass "smoke_test_cycle_plan.py — meeting filter, dedup (incl. 2026-10-20 briefing-file bug), thread status, expiry, gate, ATTENTION, health"
+    else
+        fail "smoke_test_cycle_plan.py" "see /tmp/cycle_plan_smoke.out"
+        grep FAIL /tmp/cycle_plan_smoke.out | head -20 | sed 's/^/      /'
+    fi
+else
+    fail "smoke_test_cycle_plan.py" "no Python venv available"
+fi
+
 # ── 5. U4 stdio boot test (FastMCP JSON-RPC protocol cleanliness) ───────────
 section "5. U4 stdio boot test (MCP protocol stays clean)"
 

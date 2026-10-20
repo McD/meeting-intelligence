@@ -1,5 +1,5 @@
 # Post-meeting follow-up
-<!-- version: 2026-10-20 — Step 1 dedup guard escalated from prose `ls` to an exact-path `[ -e ]` code block that prints DEDUP: SKIP/PROCEED; a 2026-10-20 cycle had widened the prose check to a glob and let the Carl 1:1 pre-meeting briefing file suppress its follow-up. Previous: 2026-10-14 — threaded replies (expand:/quote:/research: responses and digest acks) switch from `gws gmail +send --thread-id`, which gws 0.22 removed, to `gws gmail +reply --message-id`. Log lines must use local time. Previous: 2026-07-02 — Step 0 invariant hardened after actions-tracker reply landed 09:42Z and no cycle picked it up until 15:00+ (host-sleep suppressed several cycles; the one cycle that ran cleanly at 10:45 logged "Step 0 dispatch is on the 15-min scheduler cadence — no files past their TTL, none needed manual attention" and skipped Step 0 entirely). Also called out an invented "delta gate" (`from:$MY_EMAIL newer_than:1h`) that has been silently short-circuiting per-file thread checks for weeks. Neither shortcut is in the skill. Step 0 now opens with a Non-negotiable invariant block that bans both misreads and permits the optimization only under strict conditions. Previous: 2026-06-24b — inline-transcript detector for `expand:` / `quote:` drops the line-count gate; ≥500 chars after stripping is the only threshold. A 28k-char transcript pasted as a single unbroken paragraph (Apple Mail-style collapse) was failing the prior ≥10-lines requirement. 2026-06-24 — Step 5 `expand:` and `quote:` branches now accept an inline-pasted transcript before falling back to `transcript_source`, closing the bug where briefing-thread `expand:` replies got the "needs a meeting transcript" error because `transcript_source` is empty for briefings. Previous: 2026-06-11 — Step 1 gains a real-meeting filter: skip events with no co-attendees, declined invites, and non-`default` eventTypes (workingLocation, outOfOffice, focusTime, birthday). Closes the bug where recurring solo blocks like `Lunch` fired daily transcript-request emails. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Earlier: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
+<!-- version: 2026-10-20b — Step 0 and Step 1 now run and obey `briefings_mcp.cycle_plan` (real-meeting filter, dedup, transcript grace, per-thread reply checks, expiry all in code, with a by-hand fallback if it fails); filenames come from the plan so the next dedup check finds them; transcript-request `extend` now writes a watermark so it stops re-extending every cycle; the awaiting-digest basename (no trailing dash) is dispatched correctly. Previous: 2026-10-20 — Step 1 dedup guard escalated from prose `ls` to an exact-path `[ -e ]` code block that prints DEDUP: SKIP/PROCEED; a 2026-10-20 cycle had widened the prose check to a glob and let a 1:1's pre-meeting briefing file suppress its follow-up. Previous: 2026-10-14 — threaded replies (expand:/quote:/research: responses and digest acks) switch from `gws gmail +send --thread-id`, which gws 0.22 removed, to `gws gmail +reply --message-id`. Log lines must use local time. Previous: 2026-07-02 — Step 0 invariant hardened after actions-tracker reply landed 09:42Z and no cycle picked it up until 15:00+ (host-sleep suppressed several cycles; the one cycle that ran cleanly at 10:45 logged "Step 0 dispatch is on the 15-min scheduler cadence — no files past their TTL, none needed manual attention" and skipped Step 0 entirely). Also called out an invented "delta gate" (`from:$MY_EMAIL newer_than:1h`) that has been silently short-circuiting per-file thread checks for weeks. Neither shortcut is in the skill. Step 0 now opens with a Non-negotiable invariant block that bans both misreads and permits the optimization only under strict conditions. Previous: 2026-06-24b — inline-transcript detector for `expand:` / `quote:` drops the line-count gate; ≥500 chars after stripping is the only threshold. A 28k-char transcript pasted as a single unbroken paragraph (Apple Mail-style collapse) was failing the prior ≥10-lines requirement. 2026-06-24 — Step 5 `expand:` and `quote:` branches now accept an inline-pasted transcript before falling back to `transcript_source`, closing the bug where briefing-thread `expand:` replies got the "needs a meeting transcript" error because `transcript_source` is empty for briefings. Previous: 2026-06-11 — Step 1 gains a real-meeting filter: skip events with no co-attendees, declined invites, and non-`default` eventTypes (workingLocation, outOfOffice, focusTime, birthday). Closes the bug where recurring solo blocks like `Lunch` fired daily transcript-request emails. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render. Earlier: 2026-06-01 — Step 0 awaiting-reply bot-vs-user check switches from From-header display-name heuristic to explicit `bot_sent_ids` tracking in the state file. The display-name check broke when gws gmail +send started returning `From: Display Name <user@example.com>` (with display name) for some sends — the dispatcher misclassified the bot's own expand: responses as user replies and fired "Didn't recognize" clarifications, looking like self-questioning. The new design captures every bot-sent message-id at send-time and persists in `bot_sent_ids` on the state file; the dispatcher SKIPs any thread message whose ID is in that list. Previous: 2026-05-29 — Step 0 awaiting-reply dispatcher gains `research: <query>` keyword. Earlier: 2026-05-28c — Authorization check via parse_from_address heredoc. 2026-05-28 — last_processed_msg watermark + From-address gate via prose; Phase 4.1 — Step 6 HTML renderer handles *italic* and numbered lists. Phase 4 adds ## Pattern flags. Phase 2 replaced Why? capture with expand/quote/cancel/extend reply keywords. Phase 1 added Notable threads, Source, Counterparty read, confidence callouts. -->
 
 After a meeting ends, find the Gemini transcript, extract actions, and deliver them.
 
@@ -38,25 +38,40 @@ Force mode is the right path when a transcript appeared late, when ledger writes
 
 ---
 
-## Step 0: Check for pending email replies
+## Step 0: Build the cycle plan, then process pending replies
 
-Before anything else, scan `~/Briefings/` for files matching `*-awaiting-*.md`.
+Run this first, verbatim:
 
-**Non-negotiable invariant.** Every follow-up cycle MUST reach a defensible statement about every awaiting file: either (a) the state file has been processed for any new user reply on the thread since `last_processed_msg`, or (b) it has been verified that the thread has no message newer than `last_processed_msg` (or has only the initial bot send). There is no third option. In particular:
+```bash
+PLAN=~/Briefings/.cycle-plan.json
+if [ -n "$(find "$PLAN" -mmin -10 2>/dev/null)" ]; then
+  echo "PLAN: reusing the plan the scheduler wrote this cycle"
+else
+  ~/.briefings/venv/bin/python3 -m briefings_mcp.cycle_plan --apply \
+    || { sleep 5; ~/.briefings/venv/bin/python3 -m briefings_mcp.cycle_plan --apply; } \
+    || echo "PLAN: FAILED"
+fi
+```
 
-1. **"No TTL expiries → skip Step 0" is banned.** TTL expiry is one of the checks inside Step 0; the absence of expired files says nothing about pending replies. If the summary sentence for Step 0 mentions only TTL, dispatch cadence, or scheduler intervals, Step 0 was not run and the cycle is incorrect.
-2. **"Dispatch is on the scheduler's 15-min cadence, so this cycle can defer" is banned.** This cycle IS the scheduler cadence. There is no other process. Deferring is a null action.
-3. **The `from:$MY_EMAIL newer_than:1h` optimization** (referred to in prior logs as the "delta gate") is not defined in this skill. If used, it must satisfy ALL of: (i) the query window is ≥ time since the previous Step 0 for this scheduler cadence plus a 15-min safety margin (never `newer_than:1h` when this cycle follows a sleep-suppressed cycle — extend to cover the gap); (ii) if the query returns any Gmail message whose thread ID matches any awaiting-file `thread_id`, per-file thread checks are MANDATORY for those files; (iii) the query result count and the list of matched thread IDs are both logged. Any cycle that has been preceded by a sleep-suppression skip (visible as an `INFO: … skipped (host-sleep majority …)` entry in `scheduler.log` since the last completed Step 0) MUST fall back to per-file thread checks — the optimization's window guarantee doesn't hold across sleep windows.
-4. **Per-file thread checks are the default.** Every branch below (retirement, awaiting-reply, awaiting-digest, transcript-request) starts with a `gws gmail users threads get` for the file's `thread_id`. That is the load-bearing operation. Optimizations only skip files known to have no new activity — they do not skip the branch's semantics.
+The scheduler builds the plan seconds before it starts you, so a headless run reuses that one; an interactive run, or a plan older than 10 minutes, builds a fresh one (retrying once). The helper fetches the calendar and every awaiting thread, deletes expired and retired state files (logging each one), and writes `~/Briefings/.cycle-plan.json`. Read that file. **It is the decision for this cycle.** The questions it answers have one right answer each, and when they were answered in prose they drifted (2026-06-06 missed tombstones, 2026-07-02 an invented "delta gate", 2026-10-20 a dedup glob that skipped a 1:1 follow-up). The code is `briefings_mcp/cycle_plan.py`, tested by `scripts/smoke_test_cycle_plan.py`.
 
-**Dispatch by filename.** The single glob covers four state-file shapes. Inspect each match's basename:
+- **`state_files_to_process`** lists the only awaiting files that need you this cycle:
+  - `status: new` — the thread's last message, `last_msg_id`, is a reply from `$MY_EMAIL` that hasn't been processed. Process that file through its branch below (`kind` names the branch: `reply`, `digest` or `transcript`), treating `last_msg_id` as the last message.
+  - `status: unknown` — the thread couldn't be fetched (see `error`). Do the branch's own thread check by hand for that file only.
+- **Every other state file was checked in code and must be left alone**: no reply yet, already processed (watermark), the bot's own send, a third-party reply, an expired file, a retired awaiting-why file, a thread Gmail says no longer exists (`thread_missing`), or a file with no `thread_id` (`invalid`). Do not re-fetch those threads, do not run a Gmail search to double-check, and never substitute a `newer_than:` query for the plan.
+- **`meetings_to_process`** is Step 1's list.
+- **`issues`** are state-file problems the code found (a deleted thread, an unreadable timestamp). Mention them in your summary; don't try to repair the files.
 
-- If the basename contains `-awaiting-why-` → **Retirement branch** below. These are Phase 1 artifacts from the now-removed Why? capture loop; log once and delete.
-- If the basename contains `-awaiting-reply-` → **Awaiting-reply branch** below (Phase 2 reply-keyword handler).
-- If the basename contains `-awaiting-digest-` → **Awaiting-digest branch** below (Phase 3 actions-tracker reply-keyword handler).
-- Otherwise (basename contains `-awaiting-` but none of the sub-prefixes above) → **Transcript-request branch** below (unchanged from v1).
+If it prints `PLAN: FAILED`, or `.cycle-plan.json` is missing or unreadable, log `ERROR: cycle plan failed — <first line of the error>` to `~/Briefings/scheduler.log`, put a line starting `ATTENTION: cycle plan failed` in your final summary, and fall back to doing everything by hand: scan `~/Briefings/*-awaiting-*.md`, run every branch's own expiry and thread checks per file, and apply Step 1's filters yourself.
 
-Process every awaiting file before falling through to Step 1.
+**Dispatch by kind** (the plan's `kind` field; by filename only in the fallback):
+
+- `-awaiting-why-` → **Retirement branch** (the plan has already retired these; only relevant in the fallback).
+- `-awaiting-reply-` → **Awaiting-reply branch** (Phase 2 reply-keyword handler; covers follow-up and briefing threads).
+- `-awaiting-digest` (the basename is `YYYY-MM-DD-1000-awaiting-digest.md`, with no trailing dash) → **Awaiting-digest branch**.
+- Any other `-awaiting-` file → **Transcript-request branch**.
+
+The expiry and "only one message" checks inside each branch are already done by the plan; they stay written out below for the fallback path. Process every file in `state_files_to_process` before moving to Step 1.
 
 ---
 
@@ -226,7 +241,7 @@ print(json.dumps(ids))
 
    **Trade-off (ordering of external sends vs watermark write):** Step 5 sends its email reply BEFORE Step 5b writes the watermark. If a crash occurs between send and watermark, the next cycle will re-process the same user reply and send a duplicate reply. The recipient of the reply is the user themselves (the bot replies on the same thread to `$MY_EMAIL`) — duplicate noise, not data loss. This trade-off favors "always deliver the reply" over "never duplicate"; reversing it would risk silent drops in the more common crash mode.
 
-6. Process every awaiting-reply file before falling through to Step 1.
+6. Process every awaiting-reply file in the plan's `state_files_to_process` (every awaiting-reply file, in the fallback) before falling through to Step 1.
 
 **Implementation notes:**
 - Keyword matching is case-insensitive on the prefix (`Expand:`, `EXPAND:`, and `expand:` all match) but case-preserving on the argument.
@@ -358,7 +373,7 @@ These state files were written by Step 6 of a `/digest` run (Phase 3). Each one 
 
    This is the single write site for the watermark across `extend`, `done:`, `done-owed:`, `drop:`, `not-mine:`, `drop-owed:`, `more:`, `send:`, `research:`, and the unrecognized-keyword branch. Step 5's execution-order step 2 calls into this routine once per reply, **before** any keyword action runs. The previous "send: writes first, others write last" split is retired — under multi-keyword parsing every action benefits from the same crash-safe up-front watermark.
 
-7. Process every awaiting-digest file before falling through to Step 1.
+7. Process every awaiting-digest file in the plan's `state_files_to_process` (every awaiting-digest file, in the fallback) before falling through to Step 1.
 
 **Implementation notes:**
 - The Python heredoc that wraps `update_commitment_state` should mirror the existing scheduler.sh:81 pattern: pass UUIDs via env var, call the function, emit JSON status.
@@ -405,7 +420,7 @@ For each transcript-awaiting file found:
      - Log `"Transcript request cancelled by user for [meeting]"` to `~/Briefings/scheduler.log`
      - Skip this entry — do not send any email or Slack message
    - **Check for extend next.** Same first-non-quoted-line logic as cancel. If that line is exactly (or starts with, followed by punctuation/whitespace) one of: `extend`, `wait`, `more time`:
-     - **Bump the awaiting file's `requested_at` to now** (so the 7-day expiry timer resets). Read the awaiting file, replace the `requested_at:` line with `requested_at: <current ISO timestamp>`, write back.
+     - **Bump the awaiting file's `requested_at` to now** (so the 7-day expiry timer resets) **and record the reply as handled**: rewrite the file with `requested_at: <current ISO timestamp>` and a `last_processed_msg: <this reply's message id>` line (add it if absent), using an atomic tmp-file + `mv` rewrite. Without the watermark the same `extend` reply is re-read every cycle and the expiry never runs out.
      - Log `"Transcript request extended by user for [meeting] — expiry reset to 7 days from now"` to `~/Briefings/scheduler.log`
      - Skip this entry — do not generate a follow-up. The scheduler will keep polling the thread for a transcript reply on subsequent cycles, just for another 7 days.
    - Otherwise, the body text is the transcript:
@@ -420,66 +435,33 @@ For each transcript-awaiting file found:
 
 ## Step 1: Find recently ended meetings
 
-Detect the system's local timezone:
-```bash
-TZ=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
-```
+Use `meetings_to_process` from the cycle plan. Each entry is a real meeting (default event type, a timed start, at least one other non-room attendee, not declined by you) that ended in the last 2 days and has neither a follow-up file nor a transcript-request file. Fields: `title`, `event_id`, `html_link`, `start`, `end`, `attendees`, `stamp`, `slug`, `minutes_since_end`, `transcript_request_due`, `followup_file`, `awaiting_file`.
 
-Get today's calendar events and find meetings to follow up on. Qualifying meetings must satisfy **all** of these:
-- End time is in the past (i.e. `end_time < now`) — do not process meetings that are still in progress or haven't started yet
-- Ended any time in the last 2 days (not just today — this catches meetings that fell through if the scheduler was down overnight or had auth issues)
-- **Looks like a real meeting, not a personal calendar block.** Apply this check against the raw event JSON (assume `EVENT_JSON` holds one event from `gws calendar events list`). All four conditions must be true; if any fails, skip the event silently (no log, no awaiting file, no transcript request):
+- **Process exactly these meetings.** Do not add one the plan didn't list, and do not skip one it did. The full `meetings` array shows why every other event was left out (`not_meeting` with a `reason`, `not_ended`, `out_of_window`, or `handled` with the file that handled it). If you think the plan is wrong, say so on an `ATTENTION:` line rather than overriding it.
+- **Use `followup_file` and `awaiting_file` verbatim** as the filenames in Steps 2, 5 and 6, and `${stamp}-${slug}` wherever a step says `YYYY-MM-DD-HHmm-slug`. The slug is computed in code so that the next cycle's dedup check finds the file you write.
+- A pre-meeting briefing's `-awaiting-reply-briefing-` file never counts as handled. The plan already knows this; a 1:1 follow-up was skipped on 2026-10-20 because a cycle decided otherwise.
 
-  ```bash
-  # 1) eventType must be the default ("default"). Skip workingLocation, outOfOffice, focusTime, birthday, etc.
-  EVENT_TYPE=$(echo "$EVENT_JSON" | jq -r '.eventType // "default"')
-  [ "$EVENT_TYPE" = "default" ] || continue
+If the plan has `calendar_ok: false`, the helper could not read the calendar, so its meeting list is empty for that reason alone. Fetch the calendar yourself and apply the **Fallback only** rules at the end of this step; if that fetch fails too, put a line starting `ATTENTION: calendar unreadable` in your summary.
 
-  # 2) Must have at least one attendee whose email is not $MY_EMAIL.
-  #    An empty/missing attendees array means it's a solo block (Lunch, Focus time, gym hold, etc.).
-  OTHER_ATTENDEES=$(echo "$EVENT_JSON" | jq --arg me "$MY_EMAIL" '[.attendees[]? | select(.email != $me)] | length')
-  [ "${OTHER_ATTENDEES:-0}" -ge 1 ] || continue
+Otherwise, if `meetings_to_process` is empty, say so and stop (after Step 0's replies are done).
 
-  # 3) The user's own responseStatus must not be "declined".
-  USER_DECLINED=$(echo "$EVENT_JSON" | jq -r --arg me "$MY_EMAIL" '[.attendees[]? | select(.email == $me) | .responseStatus] | .[0] // "accepted"')
-  [ "$USER_DECLINED" != "declined" ] || continue
-
-  # 4) Must have a dateTime start (not just a date) — all-day events are calendar holds, not meetings.
-  HAS_TIMED_START=$(echo "$EVENT_JSON" | jq -r '.start.dateTime // empty')
-  [ -n "$HAS_TIMED_START" ] || continue
-  ```
-
-  This excludes recurring solo blocks (e.g. `Lunch`, `Focus time`, `Gym`), declined invites, all-day events, and working-location/out-of-office entries — none of which can produce a transcript or a follow-up.
-
-- **Do NOT already have a follow-up or awaiting file** — before processing any meeting, run the check below.
-
-Run this block verbatim for each meeting. Set the two variables, then act on the single word it prints. Do not substitute your own `ls`, glob, or filename scan.
+**Specific meeting (`/follow-up <name>`)**: find it in the plan's `meetings` array by title. If its status is `proceed`, process it as above. If it is `handled`, stop and say which file handled it, unless force mode is on. If it isn't in the plan (older than 2 days), fetch it from the calendar yourself; `stamp` is its local start time as `YYYY-MM-DD-HHmm`, and the slug comes from code. The title is untrusted (whoever sends the invite chooses it), so pass it through a quoted heredoc, never inside `"..."` on a command line:
 
 ```bash
-STAMP="YYYY-MM-DD-HHmm"   # the meeting's start, e.g. 2026-10-20-1030
-SLUG="kebab-slug"         # e.g. carl-mcd-fortnightly-1-1 (no date prefix)
-if [ -e "$HOME/Briefings/${STAMP}-followup-${SLUG}.md" ] || [ -e "$HOME/Briefings/${STAMP}-awaiting-${SLUG}.md" ]; then
-  echo "DEDUP: SKIP"
-else
-  echo "DEDUP: PROCEED"
-fi
+~/.briefings/venv/bin/python3 -c "import sys; from briefings_mcp.cycle_plan import slugify; print(slugify(sys.stdin.read().strip()))" <<'TITLE_EOF'
+<event summary, pasted exactly>
+TITLE_EOF
 ```
 
-**`DEDUP: SKIP` → skip this meeting entirely. Do not re-send email or re-create the file. `DEDUP: PROCEED` → continue to Step 2.** The block's output is the decision; do not override it from a filename listing.
+**Force-mode exception:** if Routing detected `--force` for a specific named meeting, the dedup decision is bypassed for that meeting only. Overwrite the existing follow-up file; if an `*-awaiting-*.md` file exists for the same slug, delete it before regeneration so the rewritten follow-up's awaiting-why state is the authoritative one. Never apply force mode to the `all` sweep.
 
-The block tests two exact paths on purpose. `${STAMP}-awaiting-reply-briefing-${SLUG}.md` (written by `/briefing` before the meeting) and `${STAMP}-awaiting-reply-${SLUG}.md` are **not** dedup matches. A pre-meeting briefing must never suppress the post-meeting follow-up, and once a follow-up is sent its `-followup-` file already covers the reply-state file. (2026-10-20: a cycle replaced the old prose `ls` check with a `*-awaiting-*SLUG*.md` glob, matched the Carl 1:1 briefing's awaiting-reply file, and silently skipped the follow-up. 2026-06-06: the prose check was misread the other way and re-fired transcript requests despite tombstones.)
-
-**Force-mode exception:** if Routing detected `--force` for a specific named meeting, the guard above is bypassed for that meeting only. Overwrite the existing follow-up file; if an `*-awaiting-*.md` file exists for the same slug, delete it before regeneration so the rewritten follow-up's awaiting-why state is the authoritative one. Never apply force mode to the `all` sweep.
-
-Only meetings with no existing follow-up or awaiting file (or with force mode set for a specific meeting) should proceed to Step 2.
-
-If no qualifying meetings exist, say so and stop.
+**Fallback only (the cycle plan failed, or `calendar_ok: false`):** apply the same rules by hand. A real meeting has `eventType` `default` (or none), a `start.dateTime`, at least one attendee who is not `$MY_EMAIL` and not a `resource`, and your own `responseStatus` is not `declined`. It is handled if `~/Briefings/${STAMP}-followup-${SLUG}.md` or `~/Briefings/${STAMP}-awaiting-${SLUG}.md` exists. Test those two exact paths with `[ -e ]`, never a glob.
 
 ### Establish per-meeting variables
 
 For each qualifying meeting that proceeds to Step 2, establish these shell variables once at the end of Step 1 so they are reachable from Step 3 (audit log), Step 4 (ledger append), and beyond — single source of truth, no recomputation downstream:
 
-- **`SOURCE_MEETING`** — the meeting slug in the form `YYYY-MM-DD-HHmm-<kebab-slug>` derived from the event start time and a kebab-cased compression of the event summary. This is the same slug used for the dedup check above (`YYYY-MM-DD-HHmm-followup-SLUG.md` is `${SOURCE_MEETING}` with `-followup-` inserted). Step 4's append heredoc and Step 3's audit log both consume this variable.
+- **`SOURCE_MEETING`** — `${stamp}-${slug}` from the plan entry (e.g. `2026-10-20-1030-alex-sam-fortnightly-1-1`). The plan's `followup_file` is this with `-followup-` inserted after the stamp. Step 4's append heredoc and Step 3's audit log both consume this variable.
 - **`MEETING_TITLE`** — the raw calendar event `summary` (e.g. `"AI Proposal Review (Data Tools)"`), preserved as-is for display. Step 4's append heredoc writes it onto every ledger item as `meeting_title`, which `/digest` uses verbatim when rendering `<meeting name>` in the actions tracker. Without this field, `/digest` falls back to slugifying `source_meeting` via `briefings_mcp.format.pretty_meeting_title`, which is readable but lossy (slashes, parentheses, casing all collapse). Strip any meeting-class tags (`[coaching]`, `[debrief]`, `[capture-actions]`, etc.) from the title before exporting — those drive `COACHING_MODE` and aren't display-worthy.
 - **`COACHING_MODE`** — read the calendar event title (the event's `summary` field as returned by `gws calendar events list`). Parse it for any of these meeting-class tags, case-insensitive, substring-based (`[Coaching]`, `[ coaching ]`, and `[coaching]` all match): `[coaching]`, `[debrief]`, `[1:1-introspective]`, `[therapy]`. If any matches, AND `[capture-actions]` is **not** also present in the title, set `COACHING_MODE=1`. Otherwise set `COACHING_MODE=0`. The `[capture-actions]` override beats the meeting-class tag — it lets the user keep one real action surfaced from an otherwise coaching-shaped meeting.
 
@@ -530,9 +512,9 @@ Leave `$TRANSCRIPT_SOURCE` empty if no concrete source link can be produced (rar
 - Look for filenames matching the meeting name or attendee names
 - MacWhisper saves as plain text, one speaker turn per line
 
-If no transcript is found after all five checks:
-- If the meeting ended **less than 75 minutes ago** → log `"No transcript yet for [meeting] — will retry"` to `~/Briefings/scheduler.log` and **stop without creating any file**. The scheduler will retry on the next 15-minute cycle.
-- If the meeting ended **75 minutes ago or more** → send a transcript request email and create an awaiting file:
+If no transcript is found after all five checks, the plan's `transcript_request_due` decides (true once the meeting ended 75 or more minutes ago):
+- `transcript_request_due: false` → log `"No transcript yet for [meeting] — will retry"` to `~/Briefings/scheduler.log` and **stop without creating any file**. The scheduler will retry on the next 15-minute cycle.
+- `transcript_request_due: true` → send a transcript request email and create the plan's `awaiting_file`:
 
   1. Compose the request email subject: `"Transcript needed: [Meeting Name] — [Day Date e.g. Thu 2 Apr]"`
   2. Send to $MY_EMAIL:
@@ -554,7 +536,7 @@ If no transcript is found after all five checks:
 
   3. Capture the `threadId` from the `gws gmail +send` JSON response.
 
-  4. Create `~/Briefings/YYYY-MM-DD-HHmm-awaiting-slug.md` with this exact content:
+  4. Create `~/Briefings/<awaiting_file>` (the plan's `awaiting_file`, e.g. `2026-10-20-1030-awaiting-alex-sam-fortnightly-1-1.md`) with this exact content:
      ```
      thread_id: [threadId from send response]
      meeting: [Meeting Name]

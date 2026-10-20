@@ -231,6 +231,9 @@ meeting-intelligence/
 │   ├── ledger.py           # Append-only JSONL ledger + atomic state writes
 │   ├── query.py            # SQLite-indexed search + cross-meeting pattern detection
 │   ├── replies.py          # Canonical From-header / watermark classifier (used by Step 4 of follow-up.md)
+│   ├── cycle_plan.py       # Deterministic cycle plan: meeting filter, dedup, reply checks, expiry (the scheduler gate)
+│   ├── attention.py        # Triage of ATTENTION: lines from headless runs (emailed, rate-limited)
+│   ├── health.py           # Weekly health email
 │   └── schema.py           # Ledger entry validation
 ├── scripts/
 │   ├── scheduler.sh        # The 15-minute scheduler with pre-flight gate
@@ -240,7 +243,8 @@ meeting-intelligence/
 │   ├── smoke_test_u3p3.py  # Commitment-state mutator
 │   ├── smoke_test_u4.py    # Ledger query module
 │   ├── smoke_test_u4p4.py  # find_patterns + ledger dedup
-│   └── smoke_test_dedup.py # Reply-dedup classifier (28 fixtures incl. third-party attack rows)
+│   ├── smoke_test_dedup.py # Reply-dedup classifier (28 fixtures incl. third-party attack rows)
+│   └── smoke_test_cycle_plan.py # Cycle plan, ATTENTION triage, weekly health email
 └── README.md
 ```
 

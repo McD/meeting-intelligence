@@ -47,18 +47,46 @@ else
 fi
 
 echo ""
-echo "=== Task 3: Weekly health summary ==="
-if grep -q "generate_health_summary" "$REPO/scripts/scheduler.sh"; then
-    ok "scheduler.sh defines generate_health_summary"
+echo "=== Task 3: Weekly health summary (email since 2026-10-20) ==="
+if grep -q "^send_weekly_health()" "$REPO/scripts/scheduler.sh"; then
+    ok "scheduler.sh defines send_weekly_health"
 else
-    fail "scheduler.sh missing generate_health_summary"
+    fail "scheduler.sh missing send_weekly_health"
 fi
-# Anchor on the weekly sentinel write that closes the block; the block's opening
-# line drifts as auto-expiry handling grows, so a fixed -A window goes stale.
-if grep -B3 '> "\$WEEKLY_SENTINEL"' "$REPO/scripts/scheduler.sh" | grep -q "^ *generate_health_summary"; then
-    ok "generate_health_summary called in Monday cleanup block"
+# The Slack-only summary was silently dropped for months while Slack was off.
+if sed -n '/^send_weekly_health()/,/^}/p' "$REPO/scripts/scheduler.sh" | grep -q 'send_email' \
+   && ! sed -n '/^send_weekly_health()/,/^}/p' "$REPO/scripts/scheduler.sh" | grep -q 'SLACK_WEBHOOK'; then
+    ok "weekly summary is emailed and does not depend on Slack"
 else
-    fail "generate_health_summary not called in Monday cleanup block"
+    fail "weekly summary must go through send_email, not Slack"
+fi
+if grep -A1 'WEEKLY_EMAIL_SENTINEL" 2>/dev/null)" \]; then' "$REPO/scripts/scheduler.sh" | grep -q "send_weekly_health"; then
+    ok "send_weekly_health runs under the Monday sentinel guard"
+else
+    fail "send_weekly_health not wired to the Monday guard"
+fi
+
+echo ""
+echo "=== Task 4: Cycle plan gate + ATTENTION channel (2026-10-20) ==="
+if grep -q "python3 -m briefings_mcp.cycle_plan --calendar-env CAL_DATA --apply" "$REPO/scripts/scheduler.sh"; then
+    ok "pre-flight gate runs briefings_mcp.cycle_plan"
+else
+    fail "pre-flight gate does not run the cycle plan"
+fi
+if grep -q "any('-awaiting-' in f" "$REPO/scripts/scheduler.sh"; then
+    fail "old gate still wakes Claude for every awaiting file"
+else
+    ok "old wake-on-any-awaiting-file rule is gone"
+fi
+if grep -q '\.notify_dedup_venv-broken|.notify_dedup_auto-expiry-failed|.notify_dedup_cycle-plan) continue' "$REPO/scripts/scheduler.sh"; then
+    ok "cycle-plan alert marker survives the success sweep (no 15-min flood)"
+else
+    fail "cycle-plan alert marker would be cleared by every fallback Claude run"
+fi
+if grep -q 'notify_attention "\$label" "\$output"' "$REPO/scripts/scheduler.sh" && grep -q "starting with ATTENTION:" "$REPO/scripts/scheduler.sh"; then
+    ok "headless output is scanned for ATTENTION lines and the prompt asks for them"
+else
+    fail "ATTENTION channel not wired"
 fi
 
 echo ""

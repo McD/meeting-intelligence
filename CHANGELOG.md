@@ -6,8 +6,40 @@ All notable changes to meeting-intelligence are noted here. The format is loosel
 
 ## Unreleased
 
+### Changed
+
+- **Scheduler decisions moved from prose to code** (`briefings_mcp/cycle_plan.py`).
+  Which events are real meetings, which already have a follow-up, whether the
+  75-minute transcript grace has passed, which awaiting threads have an
+  unprocessed reply, and which state files have expired are now computed by
+  one tested helper. The scheduler uses it as the pre-flight gate, so Claude
+  only wakes for a meeting that needs a follow-up or a thread with a new reply
+  (it used to wake for any awaiting file, about 96 runs a day). `/follow-up`
+  runs the same helper and obeys its plan, with a by-hand fallback. Fixes the
+  2026-10-20 bug where a pre-meeting briefing's state file suppressed a 1:1
+  follow-up, and retires the "delta gate" drift for good.
+- **Weekly health summary is an email** (`briefings_mcp/health.py`). The
+  Slack-only version had been dropped silently since Slack was disabled on
+  2026-08-05. It now lists failures, the week's ATTENTION flags, state-file
+  problems and housekeeping, and its subject says whether anything needs a look.
+
+### Fixed
+
+- Replying `extend` to a transcript request now records a watermark, so the
+  reply is no longer re-read every cycle with the 7-day expiry pushed forward
+  forever.
+- `/follow-up` Step 0 dispatches `YYYY-MM-DD-1000-awaiting-digest.md` (no
+  trailing dash) to the digest branch by rule rather than by luck.
+- A half-written Gmail draft in an awaiting thread no longer counts as a reply,
+  and a bot send whose id wasn't recorded no longer reads as a new reply (which
+  could have made the bot answer itself every cycle).
+
 ### Added
 
+- **ATTENTION channel** (`briefings_mcp/attention.py`). Headless runs flag
+  problems with the system itself on `ATTENTION:` lines; the scheduler emails
+  them (same point at most once a week, at most two emails a day) and records
+  every one for the weekly email.
 - **`MY_NAME` config field** — optional entry in `~/.briefings_config`. Widens the
   `/digest` "Yours" matcher so commitments recorded under your display name
   (e.g. "Jane Doe") get attributed correctly. Falls back to the local-part of

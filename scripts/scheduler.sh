@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every 15 minutes via launchd.
-# version: 2026-08-25 — notify_macos() added as a second surface alongside notify_slack(). Every notify_slack call now fires a macOS Notification Center alert before the SLACK_WEBHOOK guard, so failures are visible even while Slack is disabled (guest account, ~/.slack_webhook.disabled). notify_slack_once gains a two-part streak escalation: the 3rd suppressed call inside the 4h dedup window fires ONE bonus re-notify per window (gated by .notify_escalated_${key}), and every real fire (Path 4 or escalation) increments a cumulative .notify_count_${key} so the "[repeat ×N]" prefix conveys outage duration rather than always reading "×3". Escalation must NOT refresh the dedup marker — the original attempt at this feature did, which reintroduced the 2026-06-15 flood shape (~32 pings/day under a sustained outage); the adversarial review caught it before commit. Addresses the 2026-08-19 → 08-25 outage where 342 consecutive "OAuth session expired" cycles fired silently against a disabled Slack surface — 6 days of no briefings/follow-ups that Mark only noticed when a specific follow-up (Carl McD 1:1) didn't land. State stored per-key in .notify_dedup_/.notify_streak_/.notify_escalated_/.notify_count_${key}; all four cleared together on successful cycle, gws-oauth recovery, and venv recovery (with the same venv-broken/auto-expiry-failed exclusion the pre-existing dedup logic used). Previous: 2026-06-26 — run_with_watchdog now distinguishes host-sleep-induced deadline expiry from real stalls. Each poll iteration measures (actual wall duration) vs (wait_budget); excesses beyond a 30s jitter allowance are attributed to host sleep. On deadline expiry, if >50% of the timeout was sleep, exit 125 (skip, no Slack) instead of 124 (real timeout, Slack ping). Also raised CLAUDE_TIMEOUT_SECONDS 600→900 since legitimate briefing+follow-up cycles routinely landed 420-600s against the prior cap. Together these address the 30-timeouts-in-40h flood the user surfaced on 2026-06-26: the overnight cluster (06-25 19:19 → 06-26 08:50, 13 consecutive) was the laptop sleeping, and the daytime ones had no headroom. Previous: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
+# version: 2026-10-20 — the pre-flight gate is now briefings_mcp.cycle_plan: real-meeting filter, dedup, transcript grace, per-thread reply checks and state-file expiry are decided in code, and Claude wakes only for a meeting that needs a follow-up or a thread with a new reply (the old gate woke it for any awaiting file, ~96 runs a day). Fails open, with a cycle-plan alert excluded from the success sweep so a fallback run cannot reset it. ATTENTION: lines in headless output are triaged by briefings_mcp.attention and emailed (weekly repeat suppression, 2 a day max). The weekly health summary is now an email from briefings_mcp.health; the Slack-only version had been dropped silently since Slack was disabled on 2026-08-05. send_email() is shared with the token reminder. Previous: 2026-08-25 — notify_macos() added as a second surface alongside notify_slack(). Every notify_slack call now fires a macOS Notification Center alert before the SLACK_WEBHOOK guard, so failures are visible even while Slack is disabled (guest account, ~/.slack_webhook.disabled). notify_slack_once gains a two-part streak escalation: the 3rd suppressed call inside the 4h dedup window fires ONE bonus re-notify per window (gated by .notify_escalated_${key}), and every real fire (Path 4 or escalation) increments a cumulative .notify_count_${key} so the "[repeat ×N]" prefix conveys outage duration rather than always reading "×3". Escalation must NOT refresh the dedup marker — the original attempt at this feature did, which reintroduced the 2026-06-15 flood shape (~32 pings/day under a sustained outage); the adversarial review caught it before commit. Addresses the 2026-08-19 → 08-25 outage where 342 consecutive "OAuth session expired" cycles fired silently against a disabled Slack surface — 6 days of no briefings/follow-ups that Mark only noticed when a specific follow-up (Carl McD 1:1) didn't land. State stored per-key in .notify_dedup_/.notify_streak_/.notify_escalated_/.notify_count_${key}; all four cleared together on successful cycle, gws-oauth recovery, and venv recovery (with the same venv-broken/auto-expiry-failed exclusion the pre-existing dedup logic used). Previous: 2026-06-26 — run_with_watchdog now distinguishes host-sleep-induced deadline expiry from real stalls. Each poll iteration measures (actual wall duration) vs (wait_budget); excesses beyond a 30s jitter allowance are attributed to host sleep. On deadline expiry, if >50% of the timeout was sleep, exit 125 (skip, no Slack) instead of 124 (real timeout, Slack ping). Also raised CLAUDE_TIMEOUT_SECONDS 600→900 since legitimate briefing+follow-up cycles routinely landed 420-600s against the prior cap. Together these address the 30-timeouts-in-40h flood the user surfaced on 2026-06-26: the overnight cluster (06-25 19:19 → 06-26 08:50, 13 consecutive) was the laptop sleeping, and the daytime ones had no headroom. Previous: 2026-06-12 — run_with_watchdog now uses a wall-clock deadline (time.time(), aka gettimeofday) instead of a single subprocess.wait(timeout=...) call. The 2026-06-01 version claimed wall-clock semantics but the implementation relied on Python's monotonic clock, which on macOS is mach_absolute_time() and pauses during system sleep — a 1200s budget could outlast the laptop sleeping for hours. On 2026-06-12 a 06:12 cycle ran 2h53m before being killed manually; subsequent launchd cycles (06:27 onward) were silently skipped because launchd serializes scheduler.sh instances, killing that morning's briefing window. New design polls subprocess.wait() in ≤10s bursts and re-checks the wall-clock deadline each iteration, so a hung child is killed within ~10s of wake. Previous: 2026-06-06 — Tightened run_claude prompt at line 440 from "Run these in sequence" → "Run ONLY these slash commands…then stop". Headless opus-4-7 was reading the original prompt's plural framing as license to also invoke unrequested commands; on 2026-06-06 Saturday at 02:40 BST it finished a Saturday `/follow-up all` (no-op) and volunteered `/digest`, sending the user an off-day actions tracker. The new wording is explicit that only the listed commands run and the turn ends after them. Earlier: 2026-06-01 — Removed gtimeout invocation entirely. Replaced with a bash-native `run_with_watchdog` function using only Apple-signed system binaries (bash builtins + /bin/sleep + /bin/kill). Sidesteps a macOS Sequoia TCC bug where kTCCServiceSystemPolicyAppData consent for adhoc-signed Homebrew CLI binaries (gtimeout) writes auth_value=5 instead of 2 on Allow, causing every 15-min cycle to re-prompt the user. Wall-clock semantics instead of gtimeout's awake-time; the lockfile + 15-min cadence already protect against runaway cycles, so the laptop-sleeps-mid-cycle edge case is bounded. Previous: 2026-05-28d — CLAUDE_TIMEOUT_SECONDS raised from 600 to 1200. Earlier: 2026-05-28b — detects `timeout`/`gtimeout` at script start; install.sh installed coreutils as Step 4 (no longer required). 2026-05-28 — notify_slack curl gets --max-time/--connect-timeout; run_claude wrapped in timeout 600; CLAUDE_VERSION_FILE deferred until after a successful run. Phase 3 — adds NEED_DIGEST gate.
 
 BRIEFING_DIR="$HOME/Briefings"
 LOCK_FILE="$BRIEFING_DIR/.scheduler.lock"
@@ -102,77 +102,6 @@ while True:
             sleep_jumps += actual - wait_budget
         continue
 PYEOF
-}
-
-# Weekly health summary: parse scheduler.log for the last 7 days and Slack-notify.
-# Called once per week during the Monday cleanup window (see below).
-generate_health_summary() {
-    local log="$BRIEFING_DIR/scheduler.log"
-    [ -f "$log" ] || return 0
-    [ -n "$SLACK_WEBHOOK" ] || return 0
-
-    local summary
-    summary=$(/usr/bin/python3 - "$log" <<'PYEOF'
-import re, sys
-from datetime import datetime, timedelta
-
-log_path = sys.argv[1]
-since = datetime.now() - timedelta(days=7)
-
-skipped = ran = done = t_timeout = t_auth = t_perm = t_other = t_escalation = 0
-
-with open(log_path, errors='replace') as f:
-    for line in f:
-        m = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]', line)
-        if not m:
-            continue
-        try:
-            ts = datetime.strptime(m.group(1), '%Y-%m-%d %H:%M')
-        except ValueError:
-            continue
-        if ts < since:
-            continue
-        # Order matters: streak-escalation lines are ERROR-adjacent but must not
-        # double-count as t_other. Check escalation before the generic ERROR bucket.
-        if 'streak escalation' in line:
-            t_escalation += 1
-        elif 'skipped Claude' in line:
-            skipped += 1
-        elif line.rstrip().endswith('Done.'):
-            done += 1
-        elif 'Running:' in line:
-            ran += 1
-        elif 'timed out' in line:
-            t_timeout += 1
-        elif 'auth failure' in line or 'OAuth token' in line:
-            t_auth += 1
-        elif 'permission prompt' in line:
-            t_perm += 1
-        elif 'ERROR:' in line:
-            t_other += 1
-
-total = skipped + ran
-failures = t_timeout + t_auth + t_perm + t_other
-
-lines = [":bar_chart: *Scheduler health (last 7 days)*"]
-lines.append(f"  {total} cycles — {skipped} skipped, {ran} ran Claude")
-failure_detail = ", ".join(filter(None, [
-    f"{t_timeout} timeout" if t_timeout else "",
-    f"{t_auth} auth" if t_auth else "",
-    f"{t_perm} permission" if t_perm else "",
-    f"{t_other} other" if t_other else "",
-]))
-lines.append(f"  {done} successful, {failures} failed" + (f" ({failure_detail})" if failures else ""))
-# Surface streak escalations separately — they are notification events (evidence
-# that a real sustained outage is being flagged), not distinct failure cycles.
-# Undercounting them in the pre-fix parser was the review's Important #6.
-if t_escalation:
-    lines.append(f"  {t_escalation} streak escalation(s) fired inside dedup windows")
-print("\\n".join(lines))
-PYEOF
-    )
-
-    [ -n "$summary" ] && notify_slack "$summary"
 }
 
 umask 077
@@ -385,17 +314,18 @@ elif [ -f "$BRIEFING_DIR/.notify_dedup_venv-broken" ]; then
 fi
 rm -f "$PREFLIGHT_STDERR"
 
-# Monday, once per day — keep ~/Briefings/ from growing unbounded and send the
-# weekly health summary to Slack. Sentinel file prevents multi-fire on every
+# Monday, once per day — keep ~/Briefings/ from growing unbounded. The weekly
+# health email goes out later in the cycle (send_weekly_health), after the gws
+# auth check. Sentinel file prevents multi-fire on every
 # cycle before 09:00 (the old `< 09:16` window ran up to 38 times per Monday).
 # Runs after lockfile acquisition to prevent two concurrent Monday cycles from
 # both mutating the ledger via auto-expiry.
 WEEKLY_SENTINEL="$BRIEFING_DIR/.last_weekly_summary"
 if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_SENTINEL" 2>/dev/null)" ]; then
-    find "$BRIEFING_DIR" -name "*.md" -mtime +30 -delete
-    find "$BRIEFING_DIR" -name "*-audit.jsonl" -mtime +30 -delete
-    find "$BRIEFING_DIR" -name "*-digest.sent" -mtime +30 -delete
-    log "Cleaned up files older than 30 days."
+    WEEKLY_CLEANED=$( { find "$BRIEFING_DIR" -maxdepth 1 -name "*.md" -mtime +30 -print -delete
+                        find "$BRIEFING_DIR" -maxdepth 1 -name "*-audit.jsonl" -mtime +30 -print -delete
+                        find "$BRIEFING_DIR" -maxdepth 1 -name "*-digest.sent" -mtime +30 -print -delete; } | wc -l | tr -d ' ')
+    log "Cleaned up $WEEKLY_CLEANED files older than 30 days."
 
     # Auto-expire stale open commitments from the ledger.
     # Rule: no-due-date items open >30 days, OR any item open >60 days.
@@ -499,7 +429,7 @@ PYEOF
 
     rm -f "$EXPIRED_STDERR"
 
-    generate_health_summary
+    WEEKLY_EXPIRED="$EXPIRED_COUNT"
     date +%Y-%m-%d > "$WEEKLY_SENTINEL"
 fi
 
@@ -552,6 +482,28 @@ if [ -f "$GWS_AUTH_FAILED_FILE" ]; then
     notify_slack ":white_check_mark: Briefings resumed — gws OAuth token refreshed successfully."
 fi
 
+# Print one top-level field of a JSON object ("" if absent or unparseable).
+json_field() {
+    printf '%s' "$1" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$2" 2>/dev/null
+}
+
+# Email to the user via gws. The only notification surface that survives Focus
+# modes (which mute osascript banners) while Slack is disabled. Returns non-zero
+# and sets SEND_EMAIL_ERROR on failure; never breaks the cycle.
+MY_EMAIL_CFG=$(sed -n 's/^MY_EMAIL=//p' "$HOME/.briefings_config" 2>/dev/null)
+send_email() {
+    local subject="$1" body="$2" resp
+    SEND_EMAIL_ERROR=""
+    [ -n "$MY_EMAIL_CFG" ] || { SEND_EMAIL_ERROR="MY_EMAIL missing from ~/.briefings_config"; return 1; }
+    # Bounded like every other external call: a hung send must not hold .scheduler.lock.
+    if resp=$(run_with_watchdog 60 "$GWS" gmail +send --to "$MY_EMAIL_CFG" --subject "$subject" --body "$body" --html 2>&1) \
+       && printf '%s' "$resp" | grep -q '"id"'; then
+        return 0
+    fi
+    SEND_EMAIL_ERROR="$resp"
+    return 1
+}
+
 # === Claude token renewal reminder ===
 # The 1-year `claude setup-token` token expires silently; the auth alert only
 # fires after every cycle has already started failing. From 335 days after the
@@ -562,20 +514,25 @@ fi
 # the send path is known-good.
 TOKEN_REMINDER_SENTINEL="$BRIEFING_DIR/.token_renewal_reminded"
 TOKEN_RENEW_AFTER_DAYS="${TOKEN_RENEW_AFTER_DAYS:-335}"
-remind_token_renewal() {
-    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 0
-    local mdat saved now age_days last expires my_email subject body resp
+# Epoch seconds when the Keychain token item was last written (its mdat).
+token_saved_epoch() {
+    local mdat
     mdat=$(/usr/bin/security find-generic-password -a "$(id -un)" -s "$CLAUDE_TOKEN_KEYCHAIN_SERVICE" 2>/dev/null \
         | sed -n 's/.*"mdat"<timedate>=0x[0-9A-Fa-f]*  *"\([0-9]\{14\}\)Z.*/\1/p')
-    [ -n "$mdat" ] || { log "WARN: token renewal check — couldn't read Keychain mdat."; return 0; }
-    saved=$(date -j -u -f '%Y%m%d%H%M%S' "$mdat" +%s 2>/dev/null) || return 0
+    [ -n "$mdat" ] || return 1
+    date -j -u -f '%Y%m%d%H%M%S' "$mdat" +%s 2>/dev/null
+}
+
+remind_token_renewal() {
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 0
+    local saved now age_days last expires subject body
+    saved=$(token_saved_epoch) || { log "WARN: token renewal check — couldn't read Keychain mdat."; return 0; }
     now=$(date +%s)
     age_days=$(( (now - saved) / 86400 ))
     [ "$age_days" -ge "$TOKEN_RENEW_AFTER_DAYS" ] || return 0
     last=$(cat "$TOKEN_REMINDER_SENTINEL" 2>/dev/null || echo 0)
     [ $(( now - last )) -ge 604800 ] || return 0
     expires=$(date -j -r $(( saved + 365 * 86400 )) '+%-d %b %Y')
-    my_email=$(sed -n 's/^MY_EMAIL=//p' "$HOME/.briefings_config" 2>/dev/null)
     subject="Renew the Claude token for meeting-intelligence (expires ~${expires})"
     body="<p>The scheduler's Claude token is ${age_days} days old and expires around <b>${expires}</b>. When it does, every briefing, follow-up and digest stops.</p>
 <p>In a normal Terminal window (not inside a Claude session):</p>
@@ -583,121 +540,115 @@ remind_token_renewal() {
 security add-generic-password -U -a \"\$(id -un)\" -s ${CLAUDE_TOKEN_KEYCHAIN_SERVICE} -T /usr/bin/security -w</pre>
 <p>Copy the whole sk-ant-oat01- token (about 108 characters, widen the window so it doesn't wrap) and paste it twice. Renewing resets this reminder. It repeats weekly until then.</p>"
     notify_macos "Meeting-Intelligence" "Claude token expires ~${expires}. Renew with claude setup-token (details in email)."
-    if [ -n "$my_email" ] && resp=$("$GWS" gmail +send --to "$my_email" --subject "$subject" --body "$body" --html 2>&1) \
-       && printf '%s' "$resp" | grep -q '"id"'; then
+    if send_email "$subject" "$body"; then
         echo "$now" > "$TOKEN_REMINDER_SENTINEL"
         log "Claude token is ${age_days} days old (expires ~${expires}) — renewal reminder emailed."
     else
-        log "WARN: Claude token renewal reminder email failed — will retry next cycle. ${resp:0:200}"
+        log "WARN: Claude token renewal reminder email failed — will retry next cycle. ${SEND_EMAIL_ERROR:0:200}"
     fi
 }
 remind_token_renewal
+
+# === Weekly health email ===
+# Mondays. Until 2026-10-20 this was a Slack-only summary, and Slack has been off
+# since 2026-08-05, so it had been silently dropped. Now an email built by
+# briefings_mcp.health: failures, the week's ATTENTION flags, state-file problems
+# the cycle plan found, and what housekeeping pruned. Its own sentinel, written
+# only after Gmail accepts the send, so a failed send retries on the next cycle
+# that Monday. WEEKLY_CLEANED/WEEKLY_EXPIRED are only set on the cycle that did
+# the cleanup; a retry omits those lines rather than guessing.
+WEEKLY_EMAIL_SENTINEL="$BRIEFING_DIR/.last_weekly_email"
+send_weekly_health() {
+    local saved token_expires="" result subject body
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && saved=$(token_saved_epoch); then
+        token_expires=$(date -j -r $(( saved + 365 * 86400 )) '+%-d %b %Y')
+    fi
+    if ! result=$(~/.briefings/venv/bin/python3 -m briefings_mcp.health \
+            ${WEEKLY_CLEANED:+--cleaned "$WEEKLY_CLEANED"} ${WEEKLY_EXPIRED:+--expired "$WEEKLY_EXPIRED"} \
+            --token-expires "$token_expires" 2>&1); then
+        log "WARN: weekly health email — report build failed: ${result:0:200}"
+        return 0
+    fi
+    subject=$(json_field "$result" subject)
+    body=$(json_field "$result" html)
+    [ -n "$subject" ] || { log "WARN: weekly health email — empty report."; return 0; }
+    if send_email "$subject" "$body"; then
+        date +%Y-%m-%d > "$WEEKLY_EMAIL_SENTINEL"
+        log "Weekly health email sent: $subject"
+    else
+        log "WARN: weekly health email failed — will retry next cycle. ${SEND_EMAIL_ERROR:0:200}"
+    fi
+}
+if [ "$(date +%u)" = "1" ] && [ "$(date +%Y-%m-%d)" != "$(cat "$WEEKLY_EMAIL_SENTINEL" 2>/dev/null)" ]; then
+    send_weekly_health
+fi
 
 NEED_BRIEFING=0
 NEED_FOLLOWUP=0
 NEED_DIGEST=0
 
-if echo "$CAL_EVENTS" | grep -q '"items"'; then
-    GATE_OUTPUT=$(CAL_DATA="$CAL_EVENTS" python3 <<'PYEOF'
-import os, sys, json
-from datetime import datetime, timezone, timedelta
-
-def parse_iso(s):
-    if s.endswith('Z'):
-        s = s[:-1] + '+00:00'
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        # strptime fallback for Python 3.9 which has a narrower fromisoformat
-        for fmt in ('%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M%z'):
-            try:
-                return datetime.strptime(s, fmt)
-            except ValueError:
-                continue
-        raise
-
-raw = os.environ.get('CAL_DATA', '')
-# gws prints a "Using keyring backend" preamble before JSON; find first '{'
-brace = raw.find('{')
-try:
-    data = json.loads(raw[brace:]) if brace >= 0 else {}
-except Exception:
-    print("BRIEFING=1")
-    print("FOLLOWUP=1")
-    sys.exit(0)
-
-events = data.get('items', [])
-now = datetime.now(timezone.utc)
-plus2h   = now + timedelta(hours=2)
-minus15m = now - timedelta(minutes=15)
-minus2d  = now - timedelta(days=2)
-
-briefing_dir = os.path.expanduser('~/Briefings')
-existing = os.listdir(briefing_dir) if os.path.isdir(briefing_dir) else []
-
-need_briefing = False
-need_followup = False
-
-for ev in events:
-    attendees = ev.get('attendees', []) or []
-    me = next((a for a in attendees if a.get('self')), None)
-    if me and me.get('responseStatus') == 'declined':
-        continue
-
-    start_str = ev.get('start', {}).get('dateTime')
-    end_str   = ev.get('end', {}).get('dateTime')
-    if not start_str or not end_str:
-        continue
-
-    if ev.get('eventType') in ('workingLocation', 'outOfOffice', 'focusTime'):
-        continue
-
-    if len(attendees) < 2:
-        continue
-
-    try:
-        start_dt = parse_iso(start_str)
-        end_dt   = parse_iso(end_str)
-    except Exception:
-        continue
-
-    prefix = start_dt.astimezone().strftime('%Y-%m-%d-%H%M')
-
-    has_briefing = any(
-        f.startswith(prefix + '-') and '-followup-' not in f and '-awaiting-' not in f
-        for f in existing
-    )
-    has_followup_or_awaiting = any(
-        f.startswith(prefix + '-followup-') or f.startswith(prefix + '-awaiting-')
-        for f in existing
-    )
-
-    # Briefing window: starts in next 2h OR started in last 15min (joining late)
-    if minus15m <= start_dt <= plus2h and not has_briefing:
-        need_briefing = True
-
-    # Follow-up window: ended in past, within last 2 days, no follow-up file yet
-    if minus2d <= end_dt < now and not has_followup_or_awaiting:
-        need_followup = True
-
-# An awaiting file means a transcript reply may have arrived
-if any('-awaiting-' in f and f.endswith('.md') for f in existing):
-    need_followup = True
-
-print(f"BRIEFING={1 if need_briefing else 0}")
-print(f"FOLLOWUP={1 if need_followup else 0}")
-PYEOF
-)
-    NEED_BRIEFING=$(echo "$GATE_OUTPUT" | grep '^BRIEFING=' | cut -d= -f2)
-    NEED_FOLLOWUP=$(echo "$GATE_OUTPUT" | grep '^FOLLOWUP=' | cut -d= -f2)
-    : "${NEED_BRIEFING:=0}"
-    : "${NEED_FOLLOWUP:=0}"
-else
+# === Cycle plan ===
+# briefings_mcp.cycle_plan decides in code what used to be re-derived in prose by
+# every /follow-up run: which events are real meetings, which already have a
+# follow-up or transcript request, and which awaiting-* threads have a reply
+# nobody has processed. It also deletes expired and retired state files.
+#
+# Before 2026-10-20 the gate woke Claude whenever any awaiting file existed. With
+# ~30 of them always open, that was ~96 Claude runs a day that mostly found
+# nothing, and each was another chance to misread the prose (the 2026-10-20 1:1
+# follow-up skip, the 2026-06-06 tombstone misses, the invented "delta gate"). Now
+# Claude wakes only for a meeting that needs a follow-up or a thread with a new
+# reply. /follow-up re-runs the same helper and obeys its plan.
+#
+# Fails open: if the helper can't run (venv broken, crash, timeout), wake Claude
+# with both commands so no work is missed. Issues the plan reports (a deleted
+# thread, an unreadable timestamp) are logged only when they change, and the
+# weekly health email lists them.
+PLAN_STDERR="$BRIEFING_DIR/.cycle_plan_stderr.$$"
+PLAN_SUMMARY=""
+if ! echo "$CAL_EVENTS" | grep -q '"items"'; then
     # Calendar fetch failed for a non-auth reason — fail open so we don't silently miss work
     log "WARN: calendar fetch failed, invoking Claude as fallback."
     NEED_BRIEFING=1
     NEED_FOLLOWUP=1
+elif [ "$PREFLIGHT_FAILED" = "1" ]; then
+    log "WARN: venv preflight failed, so the cycle plan can't run — invoking Claude as fallback."
+    NEED_BRIEFING=1
+    NEED_FOLLOWUP=1
+else
+    PLAN_OUTPUT=$(CAL_DATA="$CAL_EVENTS" GWS="$GWS" run_with_watchdog 120 \
+        ~/.briefings/venv/bin/python3 -m briefings_mcp.cycle_plan --calendar-env CAL_DATA --apply 2>"$PLAN_STDERR")
+    PLAN_RC=$?
+    if [ "$PLAN_RC" -eq 0 ] && echo "$PLAN_OUTPUT" | grep -q '^NEED_FOLLOWUP='; then
+        NEED_BRIEFING=$(echo "$PLAN_OUTPUT" | grep '^NEED_BRIEFING=' | cut -d= -f2)
+        NEED_FOLLOWUP=$(echo "$PLAN_OUTPUT" | grep '^NEED_FOLLOWUP=' | cut -d= -f2)
+        PLAN_SUMMARY=$(echo "$PLAN_OUTPUT" | sed -n 's/^SUMMARY=//p')
+        PLAN_ISSUES=$(echo "$PLAN_OUTPUT" | sed -n 's/^ISSUE=//p')
+        if [ -f "$BRIEFING_DIR/.notify_dedup_cycle-plan" ]; then
+            rm -f "$BRIEFING_DIR"/.notify_{dedup,streak,escalated,count}_cycle-plan
+            log "Cycle plan recovered — clearing cycle-plan dedup markers."
+            notify_slack ":sparkles: The cycle-plan helper is working again; Claude only wakes when there's real work."
+        fi
+        if [ "$PLAN_ISSUES" != "$(cat "$BRIEFING_DIR/.cycle_plan_issues" 2>/dev/null)" ]; then
+            printf '%s' "$PLAN_ISSUES" > "$BRIEFING_DIR/.cycle_plan_issues"
+            [ -n "$PLAN_ISSUES" ] && while IFS= read -r issue; do log "WARN: cycle plan — $issue"; done <<< "$PLAN_ISSUES"
+        fi
+    elif [ "$PLAN_RC" -eq 125 ]; then
+        # Watchdog: the Mac slept through most of the helper's budget. Not a fault.
+        log "INFO: cycle plan skipped (host-sleep majority) — invoking Claude as fallback."
+        NEED_BRIEFING=1
+        NEED_FOLLOWUP=1
+    else
+        log "ERROR: cycle plan failed (rc=$PLAN_RC) — invoking Claude as fallback. stderr follows:"
+        head -20 "$PLAN_STDERR" 2>/dev/null | while IFS= read -r stderr_line; do log "  stderr | $stderr_line"; done
+        notify_slack_once cycle-plan ":warning: The cycle-plan helper failed (rc=$PLAN_RC), so every cycle is waking Claude as a fallback. Check \`~/Briefings/scheduler.log\`."
+        NEED_BRIEFING=1
+        NEED_FOLLOWUP=1
+    fi
 fi
+rm -f "$PLAN_STDERR"
+: "${NEED_BRIEFING:=0}"
+: "${NEED_FOLLOWUP:=0}"
 
 # === Actions tracker digest gate (Phase 3) ===
 # Mon and Thu, any cycle from 10:00 until 18:00 local, exactly once per day.
@@ -730,7 +681,7 @@ if { [ "$DOW" = "1" ] || [ "$DOW" = "4" ]; } \
 fi
 
 if [ "$NEED_BRIEFING" = "0" ] && [ "$NEED_FOLLOWUP" = "0" ] && [ "$NEED_DIGEST" = "0" ]; then
-    log "Pre-flight: nothing to do, skipped Claude."
+    log "Pre-flight: nothing to do, skipped Claude.${PLAN_SUMMARY:+ ($PLAN_SUMMARY)}"
     exit 0
 fi
 
@@ -751,6 +702,40 @@ CLAUDE_TIMEOUT_SECONDS=900
 # within the cycle (30s back-off) so a single socket blip doesn't fire a Slack
 # alert and wait 15 min for the next launchd tick to recover.
 TRANSIENT_API_ERROR_RE='socket connection was closed unexpectedly|ECONNRESET|fetch failed|Connection error|network error'
+
+# ATTENTION lines. The scheduler prompt asks Claude to flag problems with the
+# system itself on lines starting "ATTENTION:". On 2026-10-20 a cycle diagnosed
+# its own dedup bug and the diagnosis only reached scheduler.log. Triage (repeat
+# suppression for a week, max 2 emails a day, everything recorded in
+# ~/Briefings/attention.jsonl for the weekly email) lives in
+# briefings_mcp.attention so it can be tested. Never breaks the cycle.
+notify_attention() {
+    local label="$1" output="$2" result lines subject body
+    printf '%s' "$output" | grep -qi 'ATTENTION:' || return 0
+    if ! result=$(printf '%s' "$output" | ~/.briefings/venv/bin/python3 -m briefings_mcp.attention --label "$label" 2>&1); then
+        log "WARN: attention triage failed — ${result:0:200}"
+        return 0
+    fi
+    lines=$(printf '%s' "$result" | /usr/bin/python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for t in r["send"]:
+    print("to email: " + t)
+for s in r["suppressed"]:
+    print("not emailed, " + s["reason"] + ": " + s["text"])
+' 2>/dev/null)
+    [ -n "$lines" ] && while IFS= read -r line; do log "ATTENTION ($label) $line"; done <<< "$lines"
+    subject=$(json_field "$result" subject)
+    [ -n "$subject" ] || return 0
+    body=$(json_field "$result" html)
+    notify_macos "Meeting-Intelligence" "$subject"
+    if send_email "$subject" "$body"; then
+        json_field "$result" keys | ~/.briefings/venv/bin/python3 -m briefings_mcp.attention --mark-sent "$(json_field "$result" ts)" \
+            || log "WARN: attention email sent but not marked — it may be re-sent once."
+    else
+        log "WARN: attention email failed — will email again the next time it is flagged. ${SEND_EMAIL_ERROR:0:200}"
+    fi
+}
 
 run_claude() {
     local label="$1"
@@ -773,6 +758,7 @@ run_claude() {
         log "INFO: $label recovered on retry."
     fi
     echo "$output" >> "$BRIEFING_DIR/scheduler.log"
+    notify_attention "$label" "$output"
     if [ "$rc" -eq 124 ]; then
         log "ERROR: $label timed out after ${t}s (Claude killed)."
         notify_slack_once timeout ":hourglass: Briefings stalled — Claude Code did not return within ${t}s and was killed. Check \`~/Briefings/scheduler.log\` for the last output. Common causes: stuck MCP tool, hung gws subprocess, or LLM stall. Next cycle will retry."
@@ -815,7 +801,7 @@ COMMANDS=()
 CLAUDE_RAN_SUCCESSFULLY=0
 if [ "${#COMMANDS[@]}" -gt 0 ]; then
     label=$(IFS='+'; echo "${COMMANDS[*]}" | sed 's| all||g; s|/||g')
-    prompt=$(IFS=$'\n'; printf 'Run ONLY these slash commands, in this exact order, then stop:\n%s\n\nDo not invoke any other slash command, even if it appears that doing so would be helpful. Each listed command has its own internal checks and will skip cleanly if nothing applies. After the last listed command finishes, end your turn with a brief summary — do not continue with additional work.' "${COMMANDS[*]}")
+    prompt=$(IFS=$'\n'; printf 'Run ONLY these slash commands, in this exact order, then stop:\n%s\n\nDo not invoke any other slash command, even if it appears that doing so would be helpful. Each listed command has its own internal checks and will skip cleanly if nothing applies. After the last listed command finishes, end your turn with a brief summary — do not continue with additional work.\n\nIf you notice a problem with this system itself that the user should fix — a bug, instructions that contradict each other, a guard you could not follow, or the cycle plan disagreeing with what you found — put each one on its own line at the end of your summary, starting with ATTENTION: and saying what is wrong and what it affected. These lines are emailed to the user. Do not use ATTENTION for ordinary outcomes such as no transcript yet or no reply yet, and do not fix the system yourself.' "${COMMANDS[*]}")
     if run_claude "$label" "$prompt"; then
         CLAUDE_RAN_SUCCESSFULLY=1
     fi
@@ -834,8 +820,10 @@ if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
     # here would refire on every subsequent cycle — reproducing the
     # 2026-06-15 39-pings-in-48h flood pattern. auto-expiry-failed is
     # likewise weekly-branch-only and cleared by its own next occurrence.
-    # These markers are cleared by their own recovery paths (see venv
-    # preflight recovery branch near the top of this script).
+    # cycle-plan is excluded too: a failing helper makes Claude run as the
+    # fallback, so a successful run is expected and says nothing about the
+    # helper. These markers are cleared by their own recovery paths (see the
+    # venv preflight and cycle-plan recovery branches above).
     # Clear all four notify-state file kinds on successful cycle: dedup marker,
     # streak counter, per-window escalation marker, cumulative count. venv-broken
     # and auto-expiry-failed are excluded from all four for the same reason the
@@ -845,10 +833,10 @@ if [ "$CLAUDE_RAN_SUCCESSFULLY" = "1" ]; then
     for marker in "$BRIEFING_DIR"/.notify_dedup_* "$BRIEFING_DIR"/.notify_streak_* "$BRIEFING_DIR"/.notify_escalated_* "$BRIEFING_DIR"/.notify_count_*; do
         [ -e "$marker" ] || continue
         case "$(basename "$marker")" in
-            .notify_dedup_venv-broken|.notify_dedup_auto-expiry-failed) continue ;;
-            .notify_streak_venv-broken|.notify_streak_auto-expiry-failed) continue ;;
-            .notify_escalated_venv-broken|.notify_escalated_auto-expiry-failed) continue ;;
-            .notify_count_venv-broken|.notify_count_auto-expiry-failed) continue ;;
+            .notify_dedup_venv-broken|.notify_dedup_auto-expiry-failed|.notify_dedup_cycle-plan) continue ;;
+            .notify_streak_venv-broken|.notify_streak_auto-expiry-failed|.notify_streak_cycle-plan) continue ;;
+            .notify_escalated_venv-broken|.notify_escalated_auto-expiry-failed|.notify_escalated_cycle-plan) continue ;;
+            .notify_count_venv-broken|.notify_count_auto-expiry-failed|.notify_count_cycle-plan) continue ;;
             *) rm -f "$marker" ;;
         esac
     done
