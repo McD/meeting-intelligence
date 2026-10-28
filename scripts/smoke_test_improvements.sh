@@ -89,6 +89,12 @@ else
     fail "ATTENTION channel not wired"
 fi
 
+if grep -q 'in:sent after:YYYY/MM/DD <keywords> -to:me' "$REPO/commands/digest.md" && ! grep -q 'keywords> -subject:' "$REPO/commands/digest.md"; then
+    ok "digest done-detection excludes all self-sent system mail with -to:me"
+else
+    fail "digest done-detection would read the tool's own emails back as done evidence"
+fi
+
 echo ""
 echo "Total: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
