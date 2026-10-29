@@ -13,7 +13,8 @@ The rest is scaffolding: a background scheduler that checks your calendar every 
 - `/briefing`, `/follow-up`, and `/digest` slash commands inside Claude Code
 - A `scheduler.sh` that runs every 15 minutes via launchd and decides whether there's any work to do before invoking Claude (skips about 90% of cycles)
 - Twice-weekly actions tracker digest (Mon and Thu at 10am local) of your open commitments with reply-keyword updates
-- Weekly Slack health summary every Monday: cycle counts, Claude invocations, successes, and failure breakdown (timeout / auth / permission)
+- Weekly health email every Monday: cycle counts, Claude runs, failures, housekeeping, and anything flagged during the week
+- Problem alerts by email: when a run notices something wrong with the system itself, it emails you what broke and what it affected (rate-limited, no repeat of the same point within a week)
 - Multi-source context: Gmail, Drive, Slack, prior call transcripts
 - Email and Slack delivery
 - Prompt injection defense: all three command files treat externally-fetched content (email, calendar, Slack) as untrusted user data, never as instructions
@@ -21,10 +22,10 @@ The rest is scaffolding: a background scheduler that checks your calendar every 
 
 ## Prerequisites
 
-- **macOS** — Ventura 13 or later (Sonoma 14 and Sequoia 15 recommended; Apple Silicon or Intel)
+- **macOS** — Ventura 13 or later (Apple Silicon or Intel; in daily use on macOS 27)
 - **[Claude Code](https://claude.com/claude-code) account** — Pro, Max, Team, or Enterprise all work. The scheduler invokes Claude Code headless (`claude -p`), which any paid Claude plan supports. Max is recommended for heavy use since Pro's usage limits are tighter; a raw API key alone is not enough.
 - **Google Workspace account** — Gmail, Calendar, and Drive must be enabled
-- **Slack** (optional) — a private channel plus an incoming webhook URL; briefings and follow-ups arrive by email even without Slack
+- **Slack** (strongly recommended) — two separate pieces. **Slack search** comes from connecting Slack to your Claude account at claude.ai/settings/integrations (the installer opens this page). It is the main source of context for internal meetings and needs a full Slack member account; guest accounts can't connect. **Slack delivery** is optional: a private channel plus an incoming webhook URL. Briefings and follow-ups arrive by email either way
 
 The installer sets up Homebrew, Node.js, Python 3.11+, [Claude Code](https://claude.com/claude-code), and [gws](https://github.com/googleworkspace/cli) automatically. gws uses its own bundled OAuth client, so you do not need to create a Google Cloud project.
 
@@ -33,7 +34,7 @@ The installer sets up Homebrew, Node.js, Python 3.11+, [Claude Code](https://cla
 - **macOS only.** The scheduler uses launchd for background scheduling. Linux and Windows are not supported.
 - **Paid Claude Code account required.** The scheduler runs `claude -p` headless on each active cycle. Pro, Max, Team, and Enterprise all support this; the free Claude.ai plan does not, and raw API keys are not used. For heavy meeting days, Max avoids running into Pro's tighter usage limits.
 - **Google Workspace only.** The `gws` CLI handles Gmail, Calendar, and Drive access through a bundled OAuth client that targets Workspace accounts. Personal Gmail accounts are not supported.
-- **Slack is optional.** Without `~/.slack_webhook`, briefings and follow-ups are delivered by email only; Slack heads-up and reply keywords still work via email.
+- **Slack makes internal briefings much better, but nothing breaks without it.** Without the Slack connector, internal-meeting briefings lean on transcripts, Drive, and the ledger instead. Without `~/.slack_webhook`, everything is delivered by email only, and reply keywords work by email regardless. If you lose Slack access (for example you move to a guest account), rename the file to `~/.slack_webhook.disabled`. The scheduler then tells Claude Slack is off on purpose, so runs skip it quietly instead of emailing you about it.
 - **Calendar matching is heuristic.** The scheduler skips meetings with 0–1 attendees, all-day events, and declined events. Meetings without an attendee list (self-blocks, tasks) are also skipped.
 
 ## Install
@@ -91,6 +92,16 @@ security add-generic-password -U -a "$(id -un)" -s meeting-intelligence-claude-t
 
 The first command prints a token starting `sk-ant-oat01-`. Copy all of it (widen the window so it isn't wrapped onto two lines) and paste it twice when the second command prompts. `scheduler.sh` reads it from the login Keychain on every cycle and passes it to `claude` as `CLAUDE_CODE_OAUTH_TOKEN`. Nothing is written to the plist, the repo, or the log. If the Keychain item is missing, the scheduler falls back to your interactive login. When the token expires, the auth alert tells you to repeat these two commands; `-U` overwrites the old entry.
 
+## When something needs your attention
+
+The scheduler runs unattended, so it tells you by email when it needs you rather than relying on you to read the log.
+
+- **"Meeting-intelligence needs a look: …"** — a headless run noticed a problem with the system itself (a missing tool, contradictory instructions, a guard it couldn't follow) and says what is wrong and what it affected. At most two a day, and the same point is not repeated within a week.
+- **"Meeting-intelligence weekly: …"** — Monday's health summary: how many cycles ran, how many woke Claude, failures by type, housekeeping, every flag raised during the week, and open reply threads.
+- **"Renew the Claude token …"** — sent a month before the scheduler's one-year token expires, with the two commands to run.
+
+Everything else is in `~/Briefings/scheduler.log`. Lines starting `ERROR:` or `WARN:` are the place to start; `skipped (host-sleep majority …)` just means the Mac was asleep for most of that cycle.
+
 ## Update
 
 ```bash
@@ -124,7 +135,7 @@ Terminal's grants do not reach the scheduler. launchd-spawned processes don't in
 
 macOS Sequoia writes `auth_value=5` (re-prompt-always) instead of `auth_value=2` (allowed) when you click Allow on a TCC prompt for an adhoc-signed CLI binary like Claude Code's per-version executable. The `claude-tcc-unstick` helper remediates this by directly updating the row to `auth_value=2`.
 
-The scheduler runs `claude-tcc-unstick` automatically on every Claude Code version bump. An opt-in launchd job (`com.<user>.tcc-unstick`, template at `scripts/tcc-unstick.plist.template`) sweeps every 15 minutes to catch any rows that slip through — install it if the manual cadence becomes annoying.
+The scheduler runs `claude-tcc-unstick` automatically on every Claude Code version bump. An opt-in launchd job (`com.<user>.tcc-unstick`, template at `scripts/tcc-unstick.plist.template`) sweeps every 15 minutes to catch any rows that slip through. Both need Full Disk Access to read the TCC database from the background, and newer macOS releases (seen on macOS 27 on an MDM-managed Mac) can ignore that grant for a plain script even when it shows as on. If `launchctl print gui/$(id -u)/com.<user>.tcc-unstick` shows `last exit code = 1`, skip the launchd job and run the helper by hand from your terminal, which already has Full Disk Access, whenever a prompt starts re-firing.
 
 To run it manually:
 
@@ -365,7 +376,7 @@ Decisions are never deduped — only commitments. The schema is unchanged.
 
 ## Actions tracker
 
-Twice a week — Monday and Thursday at 10am local — the scheduler fires `/digest`, which reads open commitments from the ledger and delivers an actions tracker email plus a one-line Slack heads-up. The cadence is hardcoded; the digest file is named `~/Briefings/YYYY-MM-DD-1000-digest.md` and the scheduler uses its presence as the idempotency check, so re-firing within the same day is a no-op.
+Twice a week — Monday and Thursday at 10am local — the scheduler fires `/digest`, which reads open commitments from the ledger and delivers an actions tracker email plus a one-line Slack heads-up. The cadence is hardcoded. The digest is written to `~/Briefings/YYYY-MM-DD-1000-digest.md`, and a `-digest.sent` marker is written only after Gmail confirms the send. The scheduler keys on that marker, so a digest that was written but never sent is retried, and one that was sent is never sent twice.
 
 The digest has up to three sections:
 
@@ -373,7 +384,7 @@ The digest has up to three sections:
 - **Owed to you** — open commitments from your meetings where the owner is someone else. Useful for nudging.
 - **Nudge drafts** — pre-written 2 to 3 sentence reminder emails for any Owed-to-you item older than 14 days or past its due date. Each draft is numbered for `send: N` reply triggering.
 
-Each Yours item may also carry a `done?` confidence hint if smart pre-marking found a likely match in your Gmail sent items (best-effort, Gmail-only; gracefully skips on error).
+Each Yours item may also carry a `done?` confidence hint if smart pre-marking found evidence you've already done it: a sent email, a Slack message, or a meeting with the person since. Best-effort; each source skips quietly on error. The Gmail check ignores everything sent only to you, so the tool's own emails, which quote each commitment word for word, never count as evidence.
 
 ### Reply keywords
 
