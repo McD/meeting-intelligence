@@ -95,8 +95,8 @@ else
     fail "digest done-detection would read the tool's own emails back as done evidence"
 fi
 
-if grep -q 'do not raise ATTENTION about Slack' "$REPO/scripts/scheduler.sh"; then
-    ok "headless prompt tells runs not to flag the deliberately disabled Slack"
+if grep -q "do not raise ATTENTION about Slack" "$REPO/scripts/scheduler.sh" && grep -q '[ -f "$HOME/.slack_webhook.disabled" ]' "$REPO/scripts/scheduler.sh"; then
+    ok "Slack skip note only applies where Slack was deliberately disabled"
 else
     fail "headless runs will email an ATTENTION about Slack every week"
 fi
