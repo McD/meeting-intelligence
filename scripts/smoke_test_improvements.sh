@@ -107,6 +107,12 @@ else
     fail "digest next_meeting would match any shared attendee from a big meeting"
 fi
 
+if grep -q 'If you would call it not a bug or just worth knowing, it belongs in the summary' "$REPO/scripts/scheduler.sh"; then
+    ok "headless prompt keeps self-described non-bugs off ATTENTION lines"
+else
+    fail "headless prompt lets runs email ATTENTION for things they call not a bug"
+fi
+
 echo ""
 echo "Total: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
