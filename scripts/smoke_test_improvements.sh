@@ -101,6 +101,12 @@ else
     fail "headless runs will email an ATTENTION about Slack every week"
 fi
 
+if grep -q 'Relevance bar for big source meetings' "$REPO/commands/digest.md"; then
+    ok "digest next_meeting needs more than one shared attendee from a big meeting"
+else
+    fail "digest next_meeting would match any shared attendee from a big meeting"
+fi
+
 echo ""
 echo "Total: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

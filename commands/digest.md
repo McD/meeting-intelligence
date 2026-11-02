@@ -217,6 +217,8 @@ Reuse the wider calendar fetch from Step 2a Source 3 (which already covers past 
 
 For `owed` items specifically, prefer events whose attendee list includes the item's `owner` (resolve by email substring or display-name match against the event attendees). If no event matches the owner but other attendees of the commitment do match, fall back to the soonest of those — bringing the item up with anyone from the original meeting is better than waiting for the perfect attendee.
 
+**Relevance bar for big source meetings.** When the item's `attendees` has more than 4 people besides the user, one shared attendee is not a match on its own: a board member who sat in a 13-person board meeting is not a reason to raise board actions at their unrelated 1:1. For these items, only accept an event that includes the `owner` (owed items), the person the action is for or about by name in the summary (e.g. "Priya" in "Send Priya the pricing memo"), or at least two of the item's attendees. Found 2026-10-29: three board-meeting items all pointed at a two-person intro call whose only link was one board member.
+
 If no event in the next 14 days matches an item's attendees, set `next_meeting: null` for that item.
 
 **Skip on error.** If the calendar fetch fails or returns nothing, leave every item's `next_meeting: null` and continue. One calendar call covers all items; do not retry per-item.
