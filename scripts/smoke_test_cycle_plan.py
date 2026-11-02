@@ -262,6 +262,12 @@ c = health.count_log(log, NOW - timedelta(days=7))
 check("health: counts", (c["cycles"], c["ran"], c["skipped"], c["succeeded"], c["timeout"], c["other"]), (3, 2, 1, 1, 1, 0))
 c = health.count_log(log + ["[2026-10-19 09:16] Done.", "[2026-10-19 09:17] Done."], NOW - timedelta(days=7))
 check("health: the model's own 'Done.' log lines don't inflate successes", c["succeeded"], 1)
+c = health.count_log(log + [
+    "[2026-10-19 10:00] INFO: cycle plan skipped (host-sleep majority) — invoking Claude as fallback.",
+    "[2026-10-19 10:00] Running: briefing+follow-up",
+    "[2026-10-19 10:20] INFO: briefing+follow-up skipped (host-sleep majority of 900s budget — no Slack ping).",
+], NOW - timedelta(days=7))
+check("health: a slept cycle counts one sleep, not two (2026-11-02 email said 0 succeeded)", (c["ran"], c["sleep"], c["succeeded"]), (3, 1, 1))
 quiet_plan = {"issues": [], "state_files": [{"kind": "reply"}]}
 subj, _ = health.build_report(log[:3], NOW, quiet_plan, [], {})
 check("health: quiet week subject", subj, "Meeting-intelligence weekly: all quiet")

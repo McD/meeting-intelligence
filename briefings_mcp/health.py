@@ -47,7 +47,9 @@ def count_log(lines: Iterable[str], since: datetime) -> dict[str, int]:
             c["skipped"] += 1
         elif "Running:" in line:
             c["ran"] += 1
-        elif "host-sleep majority" in line:
+        elif "host-sleep majority" in line and "cycle plan" not in line:
+            # The cycle-plan helper logs the same phrase before Claude is even invoked.
+            # Counting both made sleeps outnumber runs and clamped successes to 0.
             c["sleep"] += 1
         elif "timed out" in line:
             c["timeout"] += 1
