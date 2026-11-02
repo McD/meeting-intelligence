@@ -608,7 +608,9 @@ PLAN_STDERR="$BRIEFING_DIR/.cycle_plan_stderr.$$"
 PLAN_SUMMARY=""
 if ! echo "$CAL_EVENTS" | grep -q '"items"'; then
     # Calendar fetch failed for a non-auth reason — fail open so we don't silently miss work
-    log "WARN: calendar fetch failed, invoking Claude as fallback."
+    # Log what gws said. 96 of 97 failures in the week to 2026-11-02 fell in DarkWake
+    # maintenance windows, but nothing recorded the error, so that was inferred from pmset.
+    log "WARN: calendar fetch failed, invoking Claude as fallback. gws said: $(printf '%s' "$CAL_EVENTS" | grep -v '^Using keyring backend' | tr '\n' ' ' | cut -c1-200)"
     NEED_BRIEFING=1
     NEED_FOLLOWUP=1
 elif [ "$PREFLIGHT_FAILED" = "1" ]; then
