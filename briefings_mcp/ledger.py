@@ -16,12 +16,18 @@ Phase 4 adds a dedup-on-write guard in `append`: commitment entries whose `sourc
 `summary` (exact or first-60-char-prefix) already match a recent entry are silent-skipped.
 Prevents /follow-up --force re-runs from accumulating duplicate copies of the same action item.
 The companion `scripts/dedup_ledger.py` cleans up duplicates already on disk.
+
+`append` also applies the user's transcription corrections (`corrections.json` beside the
+ledger) so a misheard product name doesn't split one topic into two tags.
+`scripts/apply_corrections.py` applies them to entries already on disk.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -57,6 +63,68 @@ def _ensure_paths() -> None:
     # Belt-and-suspenders: enforce modes even if the paths pre-existed with looser permissions.
     os.chmod(LEDGER_DIR, _DIR_MODE)
     os.chmod(LEDGER_PATH, _FILE_MODE)
+
+
+_CORRECTED_FIELDS = ("summary", "why", "why_notes")
+
+
+def load_corrections(directory: Path | None = None) -> dict[str, str]:
+    """Read `corrections.json` beside the ledger: {"misheard word": "right word"}.
+
+    Kept outside the repo because the words are usually real product or company names.
+    Missing or unreadable file means no corrections.
+    """
+    path = (directory or LEDGER_DIR) / "corrections.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        print(f"WARN: ignoring {path}: {exc}", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).lower(): str(v) for k, v in data.items() if k and v}
+
+
+def _match_case(original: str, replacement: str) -> str:
+    if original.isupper() and len(original) > 1:
+        return replacement.upper()
+    if original[0].isupper():
+        return replacement[0].upper() + replacement[1:]
+    return replacement.lower()
+
+
+def apply_corrections(entry: dict, corrections: dict[str, str] | None = None) -> dict:
+    """Return a copy of `entry` with transcription corrections applied.
+
+    Topic tags that equal a wrong word are renamed (and deduped); whole-word matches in the
+    free-text fields are replaced, keeping the original capitalisation.
+    """
+    if corrections is None:
+        corrections = load_corrections()
+    if not corrections:
+        return entry
+
+    fixed = dict(entry)
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(w) for w in corrections) + r")\b", re.IGNORECASE
+    )
+    for field in _CORRECTED_FIELDS:
+        if isinstance(fixed.get(field), str):
+            fixed[field] = pattern.sub(
+                lambda m: _match_case(m.group(0), corrections[m.group(0).lower()]),
+                fixed[field],
+            )
+    if isinstance(fixed.get("topics"), list):
+        topics: list = []
+        for tag in fixed["topics"]:
+            if isinstance(tag, str) and tag.lower() in corrections:
+                tag = corrections[tag.lower()].lower()
+            if tag not in topics:
+                topics.append(tag)
+        fixed["topics"] = topics
+    return fixed
 
 
 _DEDUP_SCAN_LIMIT = 50  # Last-N entries scanned by dedup-on-write (Phase 4).
@@ -125,6 +193,7 @@ def append(entry: dict) -> None:
     silent no-op. The caller doesn't need to know; the digest stops showing duplicate
     actions on /follow-up --force re-runs.
     """
+    entry = apply_corrections(entry)
     schema.validate(entry)
     if _is_duplicate_commitment(entry):
         return

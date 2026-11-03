@@ -185,6 +185,59 @@ with tempfile.TemporaryDirectory(prefix="u4p4-self-") as raw:
 
 
 # =============================================================================
+# Part 1c: transcription corrections (2026-11-03)
+# =============================================================================
+# Transcripts mis-hear product names, which then split one topic into two tags.
+
+print("\n# Part 1c: transcription corrections")
+
+with tempfile.TemporaryDirectory(prefix="u4p4-corr-") as raw:
+    tmp = Path(raw)
+    ledger.LEDGER_DIR = tmp
+    ledger.LEDGER_PATH = tmp / "decisions.jsonl"
+
+    ledger.append(make_commitment("Book the Nova demo", ["nova"]))
+    (tmp / "corrections.json").write_text(json.dumps({"Nova": "Nomad"}))
+
+    fixed = ledger.apply_corrections(make_commitment(
+        "Send nova pricing; NOVA launch follows Nova-2 review, not supernova",
+        ["Nova", "nomad", "pricing"],
+    ))
+    check("corrections: topic renamed and deduped",
+          fixed["topics"] == ["nomad", "pricing"], f"got {fixed['topics']}")
+    check("corrections: whole words fixed, case kept, other words untouched",
+          fixed["summary"]
+          == "Send nomad pricing; NOMAD launch follows Nomad-2 review, not supernova",
+          f"got {fixed['summary']!r}")
+
+    ledger.append(make_commitment("Plan the Nova rollout", ["nova", "rollout"]))
+    last = list(ledger.iter_entries())[-1]
+    check("corrections: applied on append",
+          last["summary"] == "Plan the Nomad rollout" and last["topics"] == ["nomad", "rollout"],
+          f"got {last['summary']!r} {last['topics']}")
+
+    script = REPO_ROOT / "scripts" / "apply_corrections.py"
+    dry = subprocess.run([sys.executable, str(script), "--path", str(ledger.LEDGER_PATH)],
+                         capture_output=True, text=True)
+    first = list(ledger.iter_entries())[0]
+    check("corrections script: dry-run changes nothing",
+          dry.returncode == 0 and first["summary"] == "Book the Nova demo",
+          dry.stdout + dry.stderr)
+
+    run = subprocess.run([sys.executable, str(script), "--path", str(ledger.LEDGER_PATH), "--apply"],
+                         capture_output=True, text=True)
+    first = list(ledger.iter_entries())[0]
+    check("corrections script: --apply fixes existing entries",
+          run.returncode == 0 and first["summary"] == "Book the Nomad demo"
+          and first["topics"] == ["nomad"],
+          run.stdout + run.stderr)
+
+    (tmp / "corrections.json").write_text("not json")
+    check("corrections: unreadable file is ignored",
+          ledger.apply_corrections(make_commitment("Nova", ["nova"]))["topics"] == ["nova"])
+
+
+# =============================================================================
 # Part 2: dedup-on-write in ledger.append
 # =============================================================================
 
