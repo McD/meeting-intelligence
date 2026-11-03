@@ -1,5 +1,5 @@
 # Pre-meeting briefing
-<!-- version: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render; fixes open('BRIEFING_FILE') literal bug in Slack block. Previous: 2026-05-29 — Briefings now create an awaiting-reply state file (filename pattern `*-awaiting-reply-briefing-<slug>.md` to avoid colliding with the follow-up's awaiting-reply file). Adds reply-keyword footer to the briefing markdown (`research: <query>`, `cancel`, `extend`) so replies to briefings land in the same dispatcher used by follow-ups. Step 7 HTML renderer upgraded to match `commands/follow-up.md` Step 6 / `commands/digest.md` Step 5 (italic, numbered lists, links) — consistent look and feel across every outbound email. Previous: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Earlier: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
+<!-- version: 2026-11-03 — Delta and Patterns no longer count the user as a shared attendee. The Delta lookup moved from an inline heredoc to `briefings_mcp.query.find_prior_touchpoints`, and both it and `find_patterns` drop MY_EMAIL before matching; the user is on nearly every ledger entry, so two unrelated briefings were getting identical Patterns lines and unrelated Delta entries. Previous: 2026-06-02 — HTML renderer and Slack mrkdwn blocks extracted to briefings_mcp.render; fixes open('BRIEFING_FILE') literal bug in Slack block. Previous: 2026-05-29 — Briefings now create an awaiting-reply state file (filename pattern `*-awaiting-reply-briefing-<slug>.md` to avoid colliding with the follow-up's awaiting-reply file). Adds reply-keyword footer to the briefing markdown (`research: <query>`, `cancel`, `extend`) so replies to briefings land in the same dispatcher used by follow-ups. Step 7 HTML renderer upgraded to match `commands/follow-up.md` Step 6 / `commands/digest.md` Step 5 (italic, numbered lists, links) — consistent look and feel across every outbound email. Previous: 2026-05-27 Phase 4 — adds Patterns: line to SITREP block (recurring topic tags from ledger, filtered by this meeting's attendees). Earlier: 2026-05-19 — SITREP shape: verdict heading + Trap/Delta/Comment/Counterparty over Detail body -->
 
 Generate a briefing document for upcoming meetings (internal and external), pulling context from Gmail, Drive, and Slack.
 
@@ -119,58 +119,21 @@ Skip Gmail for internal attendees. If an internal attendee has no Slack history,
 
 Before invoking the heredoc, infer 1–3 short topic tags from the meeting title, calendar description, and any linked-doc themes (e.g. `"pricing"`, `"q3-plan"`, `"renewal"`). These are used to rank ledger matches; they don't need to be exact, just consistent with the topic-tagging style used by `/follow-up`.
 
-Mirror the embedded-Python pattern from `scripts/scheduler.sh` line 81 and `commands/follow-up.md` Step 4:
+Pass every attendee on the event, including yourself. `find_prior_touchpoints` drops `$MY_EMAIL` before matching, because you are on nearly every ledger entry: an entry only counts when it shares someone else from this meeting. Do not filter or re-rank its output by hand.
 
 ```bash
 DELTA_OUT=$(LOOKBACK_DAYS="$LOOKBACK_DAYS" \
             ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \
             TOPICS_JSON='["pricing","renewal"]' \
-            python3 <<'PYEOF'
-import os, json, sys
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+            ~/.briefings/venv/bin/python3 <<'PYEOF'
+import os, json
+from briefings_mcp.query import find_prior_touchpoints
 
-lookback_days = int(os.environ.get("LOOKBACK_DAYS", "60"))
-attendees     = set(json.loads(os.environ["ATTENDEES_JSON"]))
-topics        = set(json.loads(os.environ["TOPICS_JSON"]))
-
-ledger_path = Path.home() / ".briefings" / "decisions.jsonl"
-if not ledger_path.exists():
-    print(json.dumps([]))
-    sys.exit(0)
-
-cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-
-def parse_ts(s):
-    if s.endswith('Z'):
-        s = s[:-1] + '+00:00'
-    return datetime.fromisoformat(s)
-
-matches = []
-with ledger_path.open() as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        entry_attendees = set(entry.get("attendees", []))
-        if not (entry_attendees & attendees):
-            continue
-        try:
-            created = parse_ts(entry.get("created_at", ""))
-        except Exception:
-            continue
-        if created < cutoff:
-            continue
-        topic_overlap = len(set(entry.get("topics", [])) & topics)
-        matches.append((topic_overlap, created.isoformat(), entry))
-
-# Rank: topic-overlap-count desc, then created_at desc. Surface up to 2.
-matches.sort(key=lambda m: (m[0], m[1]), reverse=True)
-print(json.dumps([m[2] for m in matches[:2]]))
+print(json.dumps(find_prior_touchpoints(
+    attendees=json.loads(os.environ["ATTENDEES_JSON"]),
+    topics=json.loads(os.environ["TOPICS_JSON"]),
+    lookback_days=int(os.environ.get("LOOKBACK_DAYS", "60")),
+)))
 PYEOF
 )
 ```
@@ -182,7 +145,7 @@ Parse `$DELTA_OUT` as a JSON array. Use the results to compose the `Delta:` sect
 
 #### Patterns (Phase 4)
 
-Right after `$DELTA_OUT`, gather pattern flags for the SITREP block. Patterns are recurring topic tags this meeting's attendees keep raising across recent ledger entries — what their fingerprint of concerns looks like.
+Right after `$DELTA_OUT`, gather pattern flags for the SITREP block. Patterns are recurring topic tags this meeting's attendees keep raising across recent ledger entries — what their fingerprint of concerns looks like. As with Delta, `find_patterns` ignores `$MY_EMAIL` when matching attendees, so pass the full attendee list.
 
 ```bash
 PATTERNS_OUT=$(ATTENDEES_JSON='["alice@acme.com","bob@example.com"]' \

@@ -8,9 +8,11 @@ date filters are exact.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections import Counter
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Optional
 
 from . import index as index_module
@@ -27,6 +29,26 @@ def _clamp(value: Optional[int], default: int) -> int:
     if value > _MAX_LIMIT:
         return _MAX_LIMIT
     return value
+
+
+def _my_email() -> str:
+    """MY_EMAIL from the environment, else ~/.briefings_config, lowercased ("" if unset)."""
+    value = os.environ.get("MY_EMAIL", "")
+    if not value:
+        try:
+            for line in Path("~/.briefings_config").expanduser().read_text().splitlines():
+                if line.startswith("MY_EMAIL="):
+                    value = line.split("=", 1)[1].strip().strip('"')
+                    break
+        except OSError:
+            pass
+    return value.strip().lower()
+
+
+def _others(attendees: list[str]) -> set[str]:
+    """Lowercased attendees minus the user. The user is on nearly every ledger entry, so
+    counting them as overlap makes an attendee filter match everything (2026-11-03)."""
+    return {a.lower() for a in attendees if a} - {_my_email()}
 
 
 def search_decisions(
@@ -125,8 +147,9 @@ def find_patterns(
     asc for deterministic tie-breaking. Empty list when no topic clears `min_count`.
 
     Filters:
-    - `attendees` — only count entries whose attendees intersect with this list
-      (case-insensitive). Used by /briefing to scope patterns to the current meeting's
+    - `attendees` — only count entries that share at least one attendee other than the
+      user (MY_EMAIL) with this list (case-insensitive). A list holding only the user
+      matches nothing. Used by /briefing to scope patterns to the current meeting's
       attendees.
     - `topic_filter` — only count entries whose topic tags include at least one of these
       (case-insensitive substring match against any tag). Used by /follow-up to scope
@@ -142,7 +165,9 @@ def find_patterns(
 
     since = date.today() - timedelta(days=window_days)
 
-    attendees_lc = {a.lower() for a in (attendees or [])}
+    attendees_lc = _others(attendees) if attendees is not None else set()
+    if attendees is not None and not attendees_lc:
+        return []
     topic_filter_lc = {t.lower() for t in (topic_filter or [])}
     types_set = set(types) if types else {"commitment", "decision"}
 
@@ -177,3 +202,34 @@ def find_patterns(
     ]
     above_threshold.sort(key=lambda pair: (-pair[1], pair[0]))
     return above_threshold[:limit]
+
+
+def find_prior_touchpoints(
+    attendees: list[str],
+    topics: Optional[list[str]] = None,
+    lookback_days: int = 60,
+    limit: int = 2,
+) -> list[dict]:
+    """Return recent ledger entries shared with this meeting's attendees, for /briefing's
+    Delta line.
+
+    An entry matches only when it shares an attendee other than the user (MY_EMAIL).
+    Ranked by topic-tag overlap with `topics` (case-insensitive), then newest first.
+    """
+    others = _others(attendees)
+    if not others or lookback_days <= 0 or limit < 1:
+        return []
+
+    since = date.today() - timedelta(days=lookback_days)
+    topics_lc = {t.lower() for t in (topics or [])}
+
+    matches = []
+    for entry in ledger_module.iter_entries(since=since):
+        entry_attendees = {a.lower() for a in (entry.get("attendees") or [])}
+        if not (entry_attendees & others):
+            continue
+        overlap = len({t.lower() for t in (entry.get("topics") or [])} & topics_lc)
+        matches.append((overlap, entry.get("created_at", ""), entry))
+
+    matches.sort(key=lambda m: (m[0], m[1]), reverse=True)
+    return [m[2] for m in matches[:limit]]

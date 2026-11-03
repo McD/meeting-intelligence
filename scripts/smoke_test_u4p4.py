@@ -7,6 +7,7 @@ Mirrors smoke_test_u3p3.py — PASS/FAIL lines, exit 0 on all-pass.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -124,6 +125,63 @@ with tempfile.TemporaryDirectory(prefix="u4p4-find-") as raw:
     # Alphabetical tiebreak among count=3 → aaa-topic before staffing
     threes = [t for t, c in tied if c == 3]
     check("alphabetical tiebreak on ties", threes == sorted(threes))
+
+
+# =============================================================================
+# Part 1b: attendee overlap ignores the user (2026-11-03)
+# =============================================================================
+# The user is on almost every ledger entry, so counting them as overlap made the
+# attendee filter match everything: two unrelated briefings got identical Patterns.
+
+print("\n# Part 1b: attendee overlap ignores the user")
+
+with tempfile.TemporaryDirectory(prefix="u4p4-self-") as raw:
+    tmp = Path(raw)
+    ledger.LEDGER_DIR = tmp
+    ledger.LEDGER_PATH = tmp / "decisions.jsonl"
+    os.environ["MY_EMAIL"] = "You@Example.com"
+
+    for i in range(4):
+        ledger.append(make_commitment(
+            f"kickoff item {i}", ["kickoff"],
+            attendees=["you@example.com", "dana@example.com"],
+        ))
+    for i in range(3):
+        ledger.append(make_commitment(
+            f"renewal item {i}", ["renewal"],
+            attendees=["you@example.com", "priya@acme.com"],
+        ))
+
+    with_self = query.find_patterns(
+        window_days=60, min_count=3, attendees=["you@example.com", "priya@acme.com"]
+    )
+    check("patterns: the user alone does not count as overlap",
+          dict(with_self) == {"renewal": 3}, f"got {with_self}")
+
+    only_self = query.find_patterns(
+        window_days=60, min_count=1, attendees=["you@example.com"]
+    )
+    check("patterns: a meeting with only the user matches nothing", only_self == [],
+          f"got {only_self}")
+
+    touch = query.find_prior_touchpoints(
+        attendees=["you@example.com", "priya@acme.com"], topics=["renewal"]
+    )
+    check("delta: only entries shared with a non-self attendee",
+          len(touch) == 2 and all("priya@acme.com" in e["attendees"] for e in touch),
+          f"got {[e['summary'] for e in touch]}")
+
+    ranked = query.find_prior_touchpoints(
+        attendees=["dana@example.com", "priya@acme.com"], topics=["renewal"]
+    )
+    check("delta: topic overlap ranks first",
+          all(e["topics"] == ["renewal"] for e in ranked),
+          f"got {[e['summary'] for e in ranked]}")
+
+    check("delta: a meeting with only the user matches nothing",
+          query.find_prior_touchpoints(attendees=["you@example.com"], topics=[]) == [])
+
+    del os.environ["MY_EMAIL"]
 
 
 # =============================================================================
