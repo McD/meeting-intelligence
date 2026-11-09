@@ -113,6 +113,12 @@ else
     fail "headless prompt lets runs email ATTENTION for things they call not a bug"
 fi
 
+if grep -q 'elif \[ "\$rc" -ne 0 \] && echo "\$output" | grep -qiE "401|authentication_error' "$REPO/scripts/scheduler.sh"; then
+    ok "a successful run that mentions 401 is not logged as an auth failure"
+else
+    fail "a successful run that mentions 401 (e.g. a transient Gmail error) is logged as an auth failure"
+fi
+
 echo ""
 echo "Total: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
