@@ -39,6 +39,12 @@ Use Google Calendar to get today's remaining events.
 
 If no meetings fall within this window, respond with a single line: "No meetings to brief in the next 2 hours." Do **not** list upcoming meetings on future days, do **not** offer to generate briefings for them, and do **not** generate any briefing files. Stop.
 
+**Merge duplicate identities first.** One person can appear on an invite under two addresses, e.g. a guest alias on the company domain plus their own firm's address (`jane.doe.acme@$COMPANY_DOMAIN` and `jane.doe@acme.com`). Treat attendees as the same person when their display names match, or when one address's local part starts with the other's (`jane.doe.acme` / `jane.doe`). Merge them into one attendee carrying both addresses, then classify that person once:
+- If the other address is on a business domain, the person is **external**. Research them once under the external rules, searching Gmail/Drive/transcripts across both addresses. Do not also list them under "Internal attendees".
+- If the other address is a consumer mailbox (gmail.com, outlook.com, icloud.com, etc.), the person is **internal**. A colleague invited on a personal address is still a colleague.
+
+Use the merged attendee list for everything below, including meeting classification and `Counterparty:`.
+
 **Classify each meeting as internal or external:**
 - **Internal**: all attendees have @$COMPANY_DOMAIN email addresses
 - **External**: any attendee has a domain outside $COMPANY_DOMAIN (and not a domain you've sent 50+ emails to in the last 90 days — treat those as "internal-adjacent" and classify as internal)
