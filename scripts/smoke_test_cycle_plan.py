@@ -216,6 +216,12 @@ broken = cp.build_plan([], NOW, {"2026-10-19-1000-awaiting-digest.md": state_fil
 check("gate: fetch failure fails open", broken["needs_followup"], True)
 check("plan: fetch failure is listed for a manual check", broken["state_files_to_process"][0]["status"], cp.T_UNKNOWN)
 
+offline = cp._gws_error({"code": 401, "message": "Connection failure: Hyper error: client error (Connect)"})
+check("fetch: gws no-network 401 is labelled a network failure, not auth",
+      (str(offline).startswith("network unavailable"), "401" in str(offline).split(":")[0], offline.missing), (True, False, False))
+check("fetch: a real 401 keeps its code", str(cp._gws_error({"code": 401, "message": "Invalid Credentials"})), "gws error 401: Invalid Credentials")
+check("fetch: 404 marks the thread missing", cp._gws_error({"code": 404, "message": "Not Found"}).missing, True)
+
 gone = cp.build_plan([], NOW, {"2026-10-19-1000-awaiting-digest.md": state_files["2026-10-19-1000-awaiting-digest.md"]},
                      {"td": cp.FetchError("missing", missing=True)}, MY, tz=LISBON)
 check("gate: deleted thread does not wake Claude every cycle", gone["needs_followup"], False)

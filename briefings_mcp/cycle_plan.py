@@ -436,6 +436,20 @@ def _parse_gws_output(raw: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _gws_error(err: dict) -> FetchError:
+    """Turn a gws error body into a FetchError.
+
+    gws reports "could not connect" as code 401, which reads like a credential
+    fault. On 2026-11-15 a follow-up run saw that 401 on two threads, then a hand
+    check worked, and it emailed ATTENTION suspecting a stale credential path.
+    The Mac was in DarkWake with no network. Name it as a network failure.
+    """
+    code, message = err.get("code"), err.get("message", "")
+    if "Connection failure" in message or "(Connect)" in message:
+        return FetchError(f"network unavailable, gws could not connect (usually the Mac asleep), not an auth fault: {message}")
+    return FetchError(f"gws error {code}: {message}", missing=code == 404)
+
+
 def _gws_json(gws: str, args: list[str], timeout: int = 45) -> dict:
     """Run gws and decode its JSON, raising FetchError on any failure."""
     try:
@@ -446,9 +460,7 @@ def _gws_json(gws: str, args: list[str], timeout: int = 45) -> dict:
     if data is None:
         raise FetchError(f"unparseable gws output (rc={p.returncode}): {(p.stdout or p.stderr)[:200]!r}")
     if "error" in data:
-        err = data["error"] or {}
-        code = err.get("code")
-        raise FetchError(f"gws error {code}: {err.get('message', '')}", missing=code == 404)
+        raise _gws_error(data["error"] or {})
     if p.returncode != 0:
         raise FetchError(f"gws rc={p.returncode}: {p.stderr[:200]!r}")
     return data
