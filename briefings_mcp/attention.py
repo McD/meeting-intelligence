@@ -38,12 +38,20 @@ DAILY_EMAIL_CAP = 2
 
 # Tolerates markdown decoration a model may add: "- ATTENTION:", "**ATTENTION:**", "> ATTENTION:".
 _ATTENTION_RE = re.compile(r"^[ \t>*_\-]*ATTENTION:[*_]*[ \t]*(\S.*?)[ \t*_]*$", re.IGNORECASE | re.MULTILINE)
+# A run with nothing to flag sometimes says so on an ATTENTION line anyway. The
+# 2026-11-19 digest emailed "ATTENTION: none — no bugs or contradictions found".
+_NOTHING_RE = re.compile(
+    r"^(none|n/?a|nil|nothing( (new|to (flag|report)))?|no (new )?(issues?|problems?|bugs?|attention items?))\b",
+    re.IGNORECASE,
+)
 
 
 def extract_attention(output: str) -> list[str]:
     """Lines a headless run flagged with a leading `ATTENTION:`, de-duplicated, in order."""
     seen: list[str] = []
     for m in _ATTENTION_RE.finditer(output or ""):
+        if _NOTHING_RE.match(m.group(1)):
+            continue
         if m.group(1) not in seen:
             seen.append(m.group(1))
     return seen

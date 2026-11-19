@@ -324,6 +324,12 @@ check("parse_ts: naive timestamps are local time", cp.parse_ts("2026-10-20T10:00
 
 check("attention: markdown-decorated lines are caught",
       att.extract_attention("- ATTENTION: one\n**ATTENTION:** two**\n> attention: three"), ["one", "two", "three"])
+check("attention: 'nothing to flag' lines are not flags",
+      att.extract_attention("ATTENTION: none — no bugs or contradictions found\nATTENTION: None.\n- ATTENTION: N/A\n"
+                            "ATTENTION: no issues this run\nATTENTION: nothing to flag"), [])
+check("attention: a real flag that starts with 'no' is kept",
+      att.extract_attention("ATTENTION: no transcript request was sent because gws 403'd\nATTENTION: nonexistent state file referenced"),
+      ["no transcript request was sent because gws 403'd", "nonexistent state file referenced"])
 send, _ = att.triage(["Dedup glob is wrong"], [rec("Dedup glob is wrong", 3, emailed=False)], NOW)
 check("attention: a point whose email failed is emailed again", send, ["Dedup glob is wrong"])
 
