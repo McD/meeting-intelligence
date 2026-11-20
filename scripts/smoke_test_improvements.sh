@@ -107,6 +107,12 @@ else
     fail "digest next_meeting would match any shared attendee from a big meeting"
 fi
 
+if grep -q 'an email thread sitting in Gmail Trash' "$REPO/scripts/scheduler.sh"; then
+    ok "headless prompt treats trashed email threads as normal, not ATTENTION"
+else
+    fail "headless runs will email an ATTENTION whenever a tracker thread is in Trash"
+fi
+
 if grep -q 'If you would call it not a bug or just worth knowing, it belongs in the summary' "$REPO/scripts/scheduler.sh"; then
     ok "headless prompt keeps self-described non-bugs off ATTENTION lines"
 else
