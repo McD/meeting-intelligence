@@ -274,6 +274,13 @@ c = health.count_log(log + [
     "[2026-10-19 10:20] INFO: briefing+follow-up skipped (host-sleep majority of 900s budget — no Slack ping).",
 ], NOW - timedelta(days=7))
 check("health: a slept cycle counts one sleep, not two (2026-11-02 email said 0 succeeded)", (c["ran"], c["sleep"], c["succeeded"]), (3, 1, 1))
+c = health.count_log(log + [
+    "[2026-10-19 10:00] Running: briefing+follow-up",
+    "[2026-10-19 10:05] INFO: briefing+follow-up skipped (no network — Claude could not reach the API; no Slack ping).",
+], NOW - timedelta(days=7))
+check("health: a no-network run is a skip, not a failure (2026-11-23 DNS outage)", (c["ran"], c["offline"], c["other"], c["succeeded"]), (3, 1, 0, 1))
+_, body = health.build_report(log[:3] + ["[2026-10-19 10:00] Running: x", "[2026-10-19 10:05] INFO: x skipped (no network — y)."], NOW, None, [], {})
+check("health: activity line names no-network skips", "1 skipped because there was no network." in body, True)
 quiet_plan = {"issues": [], "state_files": [{"kind": "reply"}]}
 subj, _ = health.build_report(log[:3], NOW, quiet_plan, [], {})
 check("health: quiet week subject", subj, "Meeting-intelligence weekly: all quiet")

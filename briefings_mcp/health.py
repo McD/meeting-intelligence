@@ -29,7 +29,7 @@ _TS_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]")
 
 def count_log(lines: Iterable[str], since: datetime) -> dict[str, int]:
     """Bucket scheduler.log lines from the last week. Same buckets as the old Slack summary."""
-    c = dict(cycles=0, skipped=0, ran=0, succeeded=0, timeout=0, auth=0, permission=0, other=0, escalation=0, sleep=0)
+    c = dict(cycles=0, skipped=0, ran=0, succeeded=0, timeout=0, auth=0, permission=0, other=0, escalation=0, sleep=0, offline=0)
     since = since.replace(tzinfo=None)
     for line in lines:
         m = _TS_RE.match(line)
@@ -51,6 +51,8 @@ def count_log(lines: Iterable[str], since: datetime) -> dict[str, int]:
             # The cycle-plan helper logs the same phrase before Claude is even invoked.
             # Counting both made sleeps outnumber runs and clamped successes to 0.
             c["sleep"] += 1
+        elif "skipped (no network" in line:
+            c["offline"] += 1
         elif "timed out" in line:
             c["timeout"] += 1
         elif "auth failure" in line or "OAuth token" in line:
@@ -62,7 +64,7 @@ def count_log(lines: Iterable[str], since: datetime) -> dict[str, int]:
     c["cycles"] = c["skipped"] + c["ran"]
     # Not a count of "Done." lines: headless runs write their own "[ts] Done." lines
     # to the same log, which made the old Slack summary report more successes than runs.
-    c["succeeded"] = max(0, c["ran"] - c["timeout"] - c["auth"] - c["permission"] - c["other"] - c["sleep"])
+    c["succeeded"] = max(0, c["ran"] - c["timeout"] - c["auth"] - c["permission"] - c["other"] - c["sleep"] - c["offline"])
     return c
 
 
@@ -99,7 +101,8 @@ def build_report(log_lines: Iterable[str], now: datetime, plan: Optional[dict], 
     activity = [
         f"{c['cycles']} scheduler cycles: {c['ran']} woke Claude, {c['skipped']} had nothing to do.",
         f"{c['succeeded']} Claude runs succeeded, {failures} failed"
-        + (f", {c['sleep']} skipped because the Mac was asleep." if c["sleep"] else "."),
+        + (f", {c['sleep']} skipped because the Mac was asleep" if c["sleep"] else "")
+        + (f", {c['offline']} skipped because there was no network" if c["offline"] else "") + ".",
     ]
     if c["escalation"]:
         activity.append(f"{c['escalation']} repeat-failure escalation(s) fired.")
